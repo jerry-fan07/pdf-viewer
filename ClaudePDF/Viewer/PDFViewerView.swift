@@ -11,13 +11,28 @@ final class PDFViewerController: ObservableObject {
     @Published private(set) var currentPageNumber = 1   // 1-indexed
     @Published private(set) var pageCount = 0
 
+    /// Region-crop mode: the overlay is mounted only while this is true (PLAN.md §4B).
+    @Published var cropModeActive = false
+
+    /// The selection or crop the next question will be asked about. Staged rather than read
+    /// at submit time, because a crop stops existing the moment the drag ends.
+    @Published private(set) var anchor: QuestionAnchor?
+
+    /// Set when a crop lands somewhere unusable, so the UI can say why nothing happened.
+    @Published var anchorError: String?
+
     @Published var searchQuery = "" {
         didSet { if searchQuery != oldValue { scheduleSearch() } }
     }
     @Published private(set) var matches: [PDFSelection] = []
     @Published private(set) var currentMatchIndex = 0   // 0-based
 
-    private var pageObserver: NSObjectProtocol?
+    /// Mirrors `selectionInfo() != nil`. Published rather than computed so the "Ask about
+    /// Selection" control actually re-enables when the user highlights text — SwiftUI has no
+    /// other way to learn that PDFKit's selection changed.
+    @Published private(set) var hasTextSelection = false
+
+    private var observers: [NSObjectProtocol] = []
     private var searchTask: Task<Void, Never>?
     private var restoreDefaultsKey: String?
 
@@ -31,19 +46,27 @@ final class PDFViewerController: ObservableObject {
     func attach(view: PDFView) {
         pdfView = view
         pageCount = view.document?.pageCount ?? 0
-        if let observer = pageObserver { NotificationCenter.default.removeObserver(observer) }
-        pageObserver = NotificationCenter.default.addObserver(
-            forName: .PDFViewPageChanged, object: view, queue: .main
-        ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.pageDidChange() }
-        }
+        observers.forEach(NotificationCenter.default.removeObserver)
+        observers = [
+            NotificationCenter.default.addObserver(
+                forName: .PDFViewPageChanged, object: view, queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated { self?.pageDidChange() }
+            },
+            NotificationCenter.default.addObserver(
+                forName: .PDFViewSelectionChanged, object: view, queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated { self?.selectionDidChange() }
+            },
+        ]
         restoreScrollPosition()
         pageDidChange()
+        selectionDidChange()
         viewReady = true
     }
 
     deinit {
-        if let observer = pageObserver { NotificationCenter.default.removeObserver(observer) }
+        observers.forEach(NotificationCenter.default.removeObserver)
     }
 
     private func pageDidChange() {
@@ -83,7 +106,7 @@ final class PDFViewerController: ObservableObject {
         view.autoScales = true
     }
 
-    // MARK: Selection (for chat)
+    // MARK: Selection & crop (for chat)
 
     /// Current text selection plus its 1-indexed page, if any.
     func selectionInfo() -> (text: String, page: Int?)? {
@@ -96,6 +119,69 @@ final class PDFViewerController: ObservableObject {
             page = document.index(for: first) + 1
         }
         return (text, page)
+    }
+
+    private func selectionDidChange() {
+        hasTextSelection = selectionInfo() != nil
+    }
+
+    /// ⌘L / "Ask about Selection": stage the live text selection as the question's anchor.
+    @discardableResult
+    func captureTextSelection() -> Bool {
+        guard let info = selectionInfo() else {
+            anchorError = "Select some text in the document first."
+            return false
+        }
+        anchorError = nil
+        anchor = .text(info.text, page: info.page)
+        return true
+    }
+
+    func toggleCropMode() {
+        cropModeActive.toggle()
+        if cropModeActive { anchorError = nil }
+    }
+
+    func cancelCrop() {
+        cropModeActive = false
+    }
+
+    func clearAnchor() {
+        anchor = nil
+        anchorError = nil
+    }
+
+    /// Finish a crop drag: overlay coords → PDFView coords → page space → PNG.
+    /// All arithmetic lives in CropGeometry/CropRenderer; this just sequences it.
+    func completeCrop(rect overlayRect: CGRect, from overlay: NSView) {
+        cropModeActive = false
+        guard let view = pdfView, let document = view.document else { return }
+
+        let viewRect = CropGeometry.viewRect(overlayRect, from: overlay, to: view)
+        guard let page = CropGeometry.page(for: viewRect, in: view) else {
+            anchorError = "That drag didn't land on a page."
+            return
+        }
+        let pageRect = CropGeometry.pageRect(for: viewRect, in: view, on: page)
+        guard let capture = CropRenderer.capture(
+            page: page, pageIndex: document.index(for: page), pageRect: pageRect
+        ) else {
+            anchorError = "That region is off the page or too small to capture."
+            return
+        }
+        anchorError = nil
+        anchor = .region(capture)
+    }
+
+    /// Consume the staged anchor, falling back to a live text selection if the user never
+    /// pressed ⌘L but does have text selected.
+    func takeAnchor() -> QuestionAnchor? {
+        if let anchor {
+            self.anchor = nil
+            return anchor
+        }
+        guard let info = selectionInfo() else { return nil }
+        return .text(info.text, page: info.page)
     }
 
     // MARK: Search

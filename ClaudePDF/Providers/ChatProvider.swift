@@ -26,6 +26,8 @@ struct Question {
     var selectedText: String?
     var selectedTextPage: Int?      // 1-indexed
     var regionImagePNG: Data?
+    var regionText: String?         // text under the crop, for providers without vision (§4B)
+    var regionPage: Int?            // 1-indexed page the crop came from
     var pageHint: Int?              // 1-indexed page the user is viewing
 }
 
