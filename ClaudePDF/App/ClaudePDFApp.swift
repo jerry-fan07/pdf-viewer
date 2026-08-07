@@ -38,10 +38,11 @@ struct DocumentWindow: View {
     let fileURL: URL?
 
     @StateObject private var viewer = PDFViewerController()
-    @StateObject private var engine = ChatEngine(provider: MockProvider())
+    @StateObject private var engine = ChatEngine(provider: ProviderFactory.make())
     @State private var pdf: PDFDocument?
     @State private var chatVisible = true
     @State private var thumbnailsVisible = false
+    @State private var cropMode = false
     @State private var pageField = "1"
     @FocusState private var searchFocused: Bool
 
@@ -54,7 +55,16 @@ struct DocumentWindow: View {
 
             Group {
                 if let pdf {
-                    PDFKitView(document: pdf, controller: viewer)
+                    ZStack {
+                        PDFKitView(
+                            document: pdf,
+                            controller: viewer,
+                            onAskAboutSelection: captureSelection
+                        )
+                        if cropMode {
+                            CropOverlay(onCrop: handleCrop)
+                        }
+                    }
                 } else {
                     ContentUnavailableView("Could not load PDF", systemImage: "doc.questionmark")
                 }
@@ -113,6 +123,13 @@ struct DocumentWindow: View {
 
             pageIndicator
             searchField
+
+            Toggle(isOn: $cropMode) {
+                Label("Select Region", systemImage: "crop")
+            }
+            .toggleStyle(.button)
+            .keyboardShortcut("a", modifiers: [.command, .shift])
+            .help("Drag to screenshot a region and ask about it (⇧⌘A)")
 
             Button {
                 chatVisible.toggle()
@@ -183,11 +200,39 @@ struct DocumentWindow: View {
 
     /// Invisible buttons that exist only to carry keyboard shortcuts.
     private var hiddenShortcuts: some View {
-        Button("") { searchFocused = true }
-            .keyboardShortcut("f", modifiers: .command)
-            .opacity(0)
-            .frame(width: 0, height: 0)
-            .accessibilityHidden(true)
+        HStack(spacing: 0) {
+            Button("") { searchFocused = true }
+                .keyboardShortcut("f", modifiers: .command)
+            Button("") { captureSelection() }
+                .keyboardShortcut("l", modifiers: .command)
+            if cropMode {
+                Button("") { cropMode = false }
+                    .keyboardShortcut(.cancelAction)
+            }
+        }
+        .opacity(0)
+        .frame(width: 0, height: 0)
+        .accessibilityHidden(true)
+    }
+
+    // MARK: Ask flows
+
+    /// "Ask About Selection" (context menu or ⌘L): stage the selection and focus the composer.
+    private func captureSelection() {
+        guard let selection = viewer.selectionInfo() else { return }
+        engine.pendingSelection = selection
+        chatVisible = true
+        engine.requestComposerFocus()
+    }
+
+    private func handleCrop(rect: CGRect, overlay: NSView) {
+        defer { cropMode = false }
+        guard let pdfView = viewer.pdfView,
+              let crop = CropExtractor.makeCrop(viewRect: rect, overlay: overlay, pdfView: pdfView)
+        else { return }
+        engine.pendingCrop = crop
+        chatVisible = true
+        engine.requestComposerFocus()
     }
 
     // MARK: Loading

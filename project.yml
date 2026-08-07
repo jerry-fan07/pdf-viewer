@@ -31,3 +31,26 @@ targets:
         # No App Sandbox — required for the Claude Code CLI provider (see PLAN.md §1).
         ENABLE_HARDENED_RUNTIME: YES
         CODE_SIGN_STYLE: Automatic
+  ClaudePDFTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: Tests
+    dependencies:
+      - target: ClaudePDF
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.jerryfan.ClaudePDFTests
+        GENERATE_INFOPLIST_FILE: YES
+schemes:
+  ClaudePDF:
+    build:
+      targets:
+        ClaudePDF: all
+        ClaudePDFTests: [test]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - ClaudePDFTests

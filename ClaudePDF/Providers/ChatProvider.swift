@@ -19,6 +19,11 @@ struct PDFDocumentInfo {
 struct DocumentAttachment {
     let providerID: String
     let handle: String
+    /// Human-readable document title, sent with the request so citations can name it.
+    var title: String = ""
+    /// The local file the handle was derived from — lets a provider invalidate a
+    /// stale server-side handle.
+    var sourceURL: URL? = nil
 }
 
 struct Question {
@@ -26,6 +31,8 @@ struct Question {
     var selectedText: String?
     var selectedTextPage: Int?      // 1-indexed
     var regionImagePNG: Data?
+    var regionPage: Int?            // 1-indexed page the crop came from
+    var regionFallbackText: String? // text inside the crop, for text-only providers
     var pageHint: Int?              // 1-indexed page the user is viewing
 }
 

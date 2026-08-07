@@ -86,7 +86,7 @@ final class PDFViewerController: ObservableObject {
     // MARK: Selection (for chat)
 
     /// Current text selection plus its 1-indexed page, if any.
-    func selectionInfo() -> (text: String, page: Int?)? {
+    func selectionInfo() -> PendingSelection? {
         guard let view = pdfView,
               let selection = view.currentSelection,
               let text = selection.string,
@@ -95,7 +95,7 @@ final class PDFViewerController: ObservableObject {
         if let first = selection.pages.first, let document = view.document {
             page = document.index(for: first) + 1
         }
-        return (text, page)
+        return PendingSelection(text: text, page: page)
     }
 
     // MARK: Search
@@ -153,22 +153,49 @@ final class PDFViewerController: ObservableObject {
 
 // MARK: - Representables
 
+/// PDFView subclass that adds "Ask About Selection" to the text-selection context menu.
+final class AskablePDFView: PDFView {
+    var onAskAboutSelection: (() -> Void)?
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        let menu = super.menu(for: event) ?? NSMenu()
+        if currentSelection?.string?.isEmpty == false {
+            let item = NSMenuItem(
+                title: "Ask About Selection",
+                action: #selector(askAboutSelection(_:)),
+                keyEquivalent: ""
+            )
+            item.target = self
+            menu.insertItem(item, at: 0)
+            menu.insertItem(.separator(), at: 1)
+        }
+        return menu
+    }
+
+    @objc private func askAboutSelection(_ sender: Any?) {
+        onAskAboutSelection?()
+    }
+}
+
 struct PDFKitView: NSViewRepresentable {
     let document: PDFDocument
     let controller: PDFViewerController
+    var onAskAboutSelection: (() -> Void)? = nil
 
     func makeNSView(context: Context) -> PDFView {
-        let view = PDFView()
+        let view = AskablePDFView()
         view.autoScales = true
         view.displayMode = .singlePageContinuous
         view.displaysPageBreaks = false
         view.document = document
+        view.onAskAboutSelection = onAskAboutSelection
         // Defer: attach() publishes state, which must not happen during view construction.
         DispatchQueue.main.async { controller.attach(view: view) }
         return view
     }
 
     func updateNSView(_ nsView: PDFView, context: Context) {
+        (nsView as? AskablePDFView)?.onAskAboutSelection = onAskAboutSelection
         if nsView.document !== document {
             nsView.document = document
             DispatchQueue.main.async { controller.attach(view: nsView) }

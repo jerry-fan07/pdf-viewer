@@ -22,6 +22,13 @@ struct MockProvider: ChatProvider {
                 if let selected = question.selectedText {
                     preamble += "\nAbout the selection: “\(selected.prefix(80))…”"
                 }
+                if question.regionImagePNG != nil {
+                    preamble += "\nAbout the cropped region on page \(question.regionPage ?? 0)"
+                    if let fallback = question.regionFallbackText {
+                        preamble += " (its text: “\(fallback.prefix(60))…”)"
+                    }
+                    preamble += "."
+                }
                 preamble += "\nThis is a placeholder answer streamed word by word. "
                 preamble += "Configure a real provider in Settings once Phase 3+ lands."
                 for word in preamble.split(separator: " ", omittingEmptySubsequences: false) {

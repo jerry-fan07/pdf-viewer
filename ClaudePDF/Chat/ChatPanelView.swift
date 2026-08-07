@@ -1,10 +1,12 @@
 import SwiftUI
+import AppKit
 
 struct ChatPanelView: View {
     @ObservedObject var engine: ChatEngine
     let viewer: PDFViewerController
 
     @State private var input = ""
+    @FocusState private var inputFocused: Bool
 
     var body: some View {
         VStack(spacing: 0) {
@@ -12,9 +14,12 @@ struct ChatPanelView: View {
             Divider()
             transcript
             Divider()
-            inputBar
+            composer
         }
         .background(.background)
+        .onChange(of: engine.composerFocusRequest) { _, _ in
+            inputFocused = true
+        }
     }
 
     private var header: some View {
@@ -36,6 +41,22 @@ struct ChatPanelView: View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 12) {
+                    if engine.providerID == "mock" {
+                        Label(
+                            "No provider configured — answers are placeholders. Add an Anthropic API key in Settings (⌘,), then reopen this document.",
+                            systemImage: "info.circle"
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    }
+                    if let status = engine.attachStatus {
+                        HStack(spacing: 6) {
+                            ProgressView().controlSize(.small)
+                            Text(status)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
                     if let attachError = engine.attachError {
                         Label(attachError, systemImage: "exclamationmark.triangle")
                             .font(.callout)
@@ -56,42 +77,147 @@ struct ChatPanelView: View {
         }
     }
 
-    private var inputBar: some View {
-        HStack(spacing: 8) {
-            TextField("Ask a question…", text: $input, axis: .vertical)
-                .textFieldStyle(.plain)
-                .lineLimit(1...4)
-                .onSubmit(submit)
-            if engine.isStreaming {
-                Button(action: engine.cancel) {
-                    Image(systemName: "stop.circle.fill")
+    // MARK: Composer
+
+    private var composer: some View {
+        VStack(spacing: 6) {
+            if engine.pendingSelection != nil || engine.pendingCrop != nil {
+                attachmentChips
+            }
+            HStack(spacing: 8) {
+                TextField("Ask a question…", text: $input, axis: .vertical)
+                    .textFieldStyle(.plain)
+                    .lineLimit(1...4)
+                    .focused($inputFocused)
+                    .onSubmit(submit)
+                if engine.isStreaming {
+                    Button(action: engine.cancel) {
+                        Image(systemName: "stop.circle.fill")
+                    }
+                    .buttonStyle(.plain)
+                    .help("Stop")
+                } else {
+                    Button(action: submit) {
+                        Image(systemName: "arrow.up.circle.fill")
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(input.trimmingCharacters(in: .whitespaces).isEmpty)
+                    .help("Ask")
                 }
-                .buttonStyle(.plain)
-                .help("Stop")
-            } else {
-                Button(action: submit) {
-                    Image(systemName: "arrow.up.circle.fill")
-                }
-                .buttonStyle(.plain)
-                .disabled(input.trimmingCharacters(in: .whitespaces).isEmpty)
-                .help("Ask")
             }
         }
         .padding(10)
     }
 
+    private var attachmentChips: some View {
+        HStack(spacing: 6) {
+            if let selection = engine.pendingSelection {
+                ChipView(
+                    systemImage: "text.quote",
+                    label: selectionChipLabel(selection),
+                    help: selection.text
+                ) {
+                    engine.pendingSelection = nil
+                }
+            }
+            if let crop = engine.pendingCrop {
+                CropChipView(crop: crop) {
+                    engine.pendingCrop = nil
+                }
+            }
+            Spacer(minLength: 0)
+        }
+    }
+
+    private func selectionChipLabel(_ selection: PendingSelection) -> String {
+        let prefix = selection.text
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .prefix(28)
+        let page = selection.page.map { " · p. \($0)" } ?? ""
+        return "“\(prefix)…”\(page)"
+    }
+
     private func submit() {
         let text = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, !engine.isStreaming else { return }
+
         var question = Question(text: text)
-        if let selection = viewer.selectionInfo() {
+        // A staged selection wins; otherwise pick up whatever is live-selected right now.
+        if let selection = engine.pendingSelection ?? viewer.selectionInfo() {
             question.selectedText = selection.text
             question.selectedTextPage = selection.page
         }
+        if let crop = engine.pendingCrop {
+            question.regionImagePNG = crop.png
+            question.regionPage = crop.pageNumber
+            question.regionFallbackText = crop.fallbackText
+        }
+        question.pageHint = viewer.currentPageNumber
+
         engine.ask(question)
+        engine.pendingSelection = nil
+        engine.pendingCrop = nil
         input = ""
     }
 }
+
+// MARK: - Chips
+
+private struct ChipView: View {
+    let systemImage: String
+    let label: String
+    var help: String = ""
+    let onRemove: () -> Void
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Image(systemName: systemImage)
+                .font(.caption)
+            Text(label)
+                .font(.caption)
+                .lineLimit(1)
+            Button(action: onRemove) {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.caption)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(.quaternary, in: Capsule())
+        .help(help)
+    }
+}
+
+private struct CropChipView: View {
+    let crop: PendingCrop
+    let onRemove: () -> Void
+
+    var body: some View {
+        HStack(spacing: 4) {
+            if let image = NSImage(data: crop.png) {
+                Image(nsImage: image)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(height: 28)
+                    .clipShape(RoundedRectangle(cornerRadius: 3))
+            }
+            Text("Region · p. \(crop.pageNumber)")
+                .font(.caption)
+            Button(action: onRemove) {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.caption)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
+        .help(crop.fallbackText ?? "Cropped region from page \(crop.pageNumber)")
+    }
+}
+
+// MARK: - Cards
 
 private struct QACardView: View {
     let card: QACard
@@ -99,13 +225,29 @@ private struct QACardView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            // Anchor: what the question was asked about
+            // Anchors: what the question was asked about
             if let selected = card.question.selectedText {
                 Text("“\(selected.prefix(120))\(selected.count > 120 ? "…" : "")”")
                     .font(.caption)
                     .italic()
                     .foregroundStyle(.secondary)
                     .lineLimit(3)
+            }
+            if let pngData = card.question.regionImagePNG, let image = NSImage(data: pngData) {
+                Image(nsImage: image)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(maxHeight: 80)
+                    .clipShape(RoundedRectangle(cornerRadius: 4))
+                    .overlay(alignment: .bottomTrailing) {
+                        if let page = card.question.regionPage {
+                            Text("p. \(page)")
+                                .font(.caption2)
+                                .padding(2)
+                                .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 3))
+                                .padding(3)
+                        }
+                    }
             }
             Text(card.question.text)
                 .font(.body.weight(.semibold))
@@ -137,15 +279,25 @@ private struct QACardView: View {
                     .foregroundStyle(.red)
             }
 
-            if let input = card.inputTokens, let cached = card.cacheReadTokens, input + cached > 0 {
-                Text("\(Int((Double(cached) / Double(input + cached)) * 100))% cached")
+            if let fraction = card.cachedFraction {
+                Text(usageSummary(fraction))
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
+                    .help("Share of this question's input read from the cached document. "
+                          + "0% after the first question means the cached prefix is being mutated.")
             }
         }
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    private func usageSummary(_ fraction: Double) -> String {
+        var summary = "\(Int((fraction * 100).rounded()))% cached"
+        if let output = card.outputTokens {
+            summary += " · \(output) tokens out"
+        }
+        return summary
     }
 
     private func markdown(_ text: String) -> AttributedString {
