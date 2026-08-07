@@ -15,8 +15,18 @@ struct SettingsView: View {
     private var deepseekPriceLine: String {
         let model = DeepSeekModel(rawValue: deepseekModel) ?? .v4Flash
         let price = model.pricing
-        return "About $\(String(format: "%.2f", price.cacheMiss))/M tokens for the first "
-            + "question on a document, $\(String(format: "%.4f", price.cacheHit))/M for the rest."
+        return "About $\(Self.money(price.cacheMiss))/M tokens for the first "
+            + "question on a document, $\(Self.money(price.cacheHit))/M for the rest."
+    }
+
+    /// Two decimals minimum, four maximum: a fixed "%.2f" would round v4-pro's
+    /// $0.435 down to $0.43 and its cache hit to $0.00.
+    private static func money(_ value: Double) -> String {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .decimal
+        formatter.minimumFractionDigits = 2
+        formatter.maximumFractionDigits = 4
+        return formatter.string(from: NSNumber(value: value)) ?? String(value)
     }
 
     var body: some View {
