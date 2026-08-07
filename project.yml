@@ -1,0 +1,33 @@
+name: ClaudePDF
+options:
+  bundleIdPrefix: dev.jerryfan
+  deploymentTarget:
+    macOS: "14.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "5.10"
+targets:
+  ClaudePDF:
+    type: application
+    platform: macOS
+    sources:
+      - path: ClaudePDF
+    info:
+      path: ClaudePDF/Info.plist
+      properties:
+        LSApplicationCategoryType: public.app-category.productivity
+        NSHumanReadableCopyright: ""
+        CFBundleDocumentTypes:
+          - CFBundleTypeName: PDF Document
+            CFBundleTypeRole: Viewer
+            LSHandlerRank: Alternate
+            LSItemContentTypes:
+              - com.adobe.pdf
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.jerryfan.ClaudePDF
+        # Hardened runtime for eventual Developer ID notarization.
+        # No App Sandbox — required for the Claude Code CLI provider (see PLAN.md §1).
+        ENABLE_HARDENED_RUNTIME: YES
+        CODE_SIGN_STYLE: Automatic
