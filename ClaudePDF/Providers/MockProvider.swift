@@ -22,6 +22,15 @@ struct MockProvider: ChatProvider {
                 if let selected = question.selectedText {
                     preamble += "\nAbout the selection: “\(selected.prefix(80))…”"
                 }
+                if let png = question.regionImagePNG {
+                    preamble += "\nWith a \(png.count / 1024) KB region crop"
+                    if let page = question.regionPage { preamble += " from page \(page)" }
+                    if let text = question.regionText {
+                        preamble += ", text under it: “\(text.prefix(60))…”"
+                    } else {
+                        preamble += " (no text layer under the crop)"
+                    }
+                }
                 preamble += "\nThis is a placeholder answer streamed word by word. "
                 preamble += "Configure a real provider in Settings once Phase 3+ lands.\n\n"
                 preamble += Self.latexSample

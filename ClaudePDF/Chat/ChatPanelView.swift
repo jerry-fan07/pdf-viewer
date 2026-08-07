@@ -1,8 +1,9 @@
 import SwiftUI
+import AppKit
 
 struct ChatPanelView: View {
     @ObservedObject var engine: ChatEngine
-    let viewer: PDFViewerController
+    @ObservedObject var viewer: PDFViewerController
 
     @State private var input = ""
 
@@ -12,6 +13,7 @@ struct ChatPanelView: View {
             Divider()
             transcript
             Divider()
+            anchorBar
             inputBar
         }
         .background(.background)
@@ -56,9 +58,41 @@ struct ChatPanelView: View {
         }
     }
 
+    /// The staged selection or crop the next question will be about (PLAN.md §6: every
+    /// question shows its anchor — here, before it is even sent).
+    @ViewBuilder
+    private var anchorBar: some View {
+        if let error = viewer.anchorError {
+            Label(error, systemImage: "exclamationmark.triangle")
+                .font(.caption)
+                .foregroundStyle(.orange)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 10)
+                .padding(.top, 8)
+        }
+        if let anchor = viewer.anchor {
+            HStack(alignment: .top, spacing: 8) {
+                AnchorPreview(anchor: anchor)
+                Spacer(minLength: 0)
+                Button {
+                    viewer.clearAnchor()
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .help("Remove this anchor")
+            }
+            .padding(8)
+            .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 6))
+            .padding(.horizontal, 10)
+            .padding(.top, 8)
+        }
+    }
+
     private var inputBar: some View {
         HStack(spacing: 8) {
-            TextField("Ask a question…", text: $input, axis: .vertical)
+            TextField(placeholder, text: $input, axis: .vertical)
                 .textFieldStyle(.plain)
                 .lineLimit(1...4)
                 .onSubmit(submit)
@@ -80,16 +114,76 @@ struct ChatPanelView: View {
         .padding(10)
     }
 
+    private var placeholder: String {
+        switch viewer.anchor {
+        case .region: return "Ask about this region…"
+        case .text: return "Ask about this selection…"
+        case nil: return "Ask a question…"
+        }
+    }
+
     private func submit() {
         let text = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, !engine.isStreaming else { return }
         var question = Question(text: text)
-        if let selection = viewer.selectionInfo() {
-            question.selectedText = selection.text
-            question.selectedTextPage = selection.page
-        }
+        question.pageHint = viewer.currentPageNumber
+        viewer.takeAnchor()?.apply(to: &question)
         engine.ask(question)
         input = ""
+    }
+}
+
+/// Shared rendering of an anchor — used both in the pending bar and on each answered card.
+private struct AnchorPreview: View {
+    let anchor: QuestionAnchor
+
+    var body: some View {
+        switch anchor {
+        case .text(let selected, let page):
+            VStack(alignment: .leading, spacing: 2) {
+                if let page {
+                    Text("Selection · p. \(page)")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+                Text("“\(selected.prefix(120))\(selected.count > 120 ? "…" : "")”")
+                    .font(.caption)
+                    .italic()
+                    .foregroundStyle(.secondary)
+                    .lineLimit(3)
+            }
+        case .region(let capture):
+            HStack(alignment: .top, spacing: 8) {
+                CropThumbnail(pngData: capture.pngData)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Region · p. \(capture.pageNumber)")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                    if let text = capture.text {
+                        Text(text.prefix(80) + (text.count > 80 ? "…" : ""))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                    }
+                }
+            }
+        }
+    }
+}
+
+private struct CropThumbnail: View {
+    let pngData: Data
+
+    var body: some View {
+        if let image = NSImage(data: pngData) {
+            Image(nsImage: image)
+                .resizable()
+                .aspectRatio(contentMode: .fit)
+                .frame(maxWidth: 96, maxHeight: 72)
+                .background(.white)
+                .overlay(RoundedRectangle(cornerRadius: 4).stroke(.quaternary))
+                .clipShape(RoundedRectangle(cornerRadius: 4))
+        }
     }
 }
 
@@ -97,15 +191,27 @@ private struct QACardView: View {
     let card: QACard
     let viewer: PDFViewerController
 
+    /// Rebuild the anchor from the question so answered cards show the same preview.
+    private var anchor: QuestionAnchor? {
+        if let png = card.question.regionImagePNG {
+            return .region(RegionCapture(
+                pngData: png,
+                text: card.question.regionText,
+                pageNumber: card.question.regionPage ?? 0,
+                pageRect: .zero,
+                pixelSize: .zero
+            ))
+        }
+        if let selected = card.question.selectedText {
+            return .text(selected, page: card.question.selectedTextPage)
+        }
+        return nil
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            // Anchor: what the question was asked about
-            if let selected = card.question.selectedText {
-                Text("“\(selected.prefix(120))\(selected.count > 120 ? "…" : "")”")
-                    .font(.caption)
-                    .italic()
-                    .foregroundStyle(.secondary)
-                    .lineLimit(3)
+            if let anchor {
+                AnchorPreview(anchor: anchor)
             }
             Text(card.question.text)
                 .font(.body.weight(.semibold))

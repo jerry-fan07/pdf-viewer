@@ -54,7 +54,22 @@ struct DocumentWindow: View {
 
             Group {
                 if let pdf {
-                    PDFKitView(document: pdf, controller: viewer)
+                    ZStack(alignment: .top) {
+                        PDFKitView(document: pdf, controller: viewer)
+                        if viewer.cropModeActive {
+                            CropOverlay(
+                                onCrop: { rect, overlay in
+                                    viewer.completeCrop(rect: rect, from: overlay)
+                                    chatVisible = true
+                                },
+                                onCancel: viewer.cancelCrop
+                            )
+                            // Explicit fill: a bare NSView has no intrinsic size, and the
+                            // overlay must cover exactly the same area as the PDFView.
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            cropHint
+                        }
+                    }
                 } else {
                     ContentUnavailableView("Could not load PDF", systemImage: "doc.questionmark")
                 }
@@ -115,12 +130,46 @@ struct DocumentWindow: View {
             searchField
 
             Button {
+                if viewer.captureTextSelection() { chatVisible = true }
+            } label: {
+                Label("Ask about Selection", systemImage: "text.viewfinder")
+            }
+            .disabled(!viewer.hasTextSelection)
+            .help("Ask about the highlighted text (⌘L)")
+
+            Button {
+                viewer.toggleCropMode()
+            } label: {
+                Label("Screenshot Region", systemImage: "rectangle.dashed")
+            }
+            .background(cropModeTint)
+            .help("Drag a rectangle to ask about a figure, table, or equation (⌘⇧A)")
+
+            Button {
                 chatVisible.toggle()
             } label: {
                 Label("Ask", systemImage: "bubble.left.and.text.bubble.right")
             }
             .help("Show or hide the chat panel")
         }
+    }
+
+    /// Toolbar buttons have no built-in "on" state; a tint behind the icon carries it.
+    @ViewBuilder
+    private var cropModeTint: some View {
+        if viewer.cropModeActive {
+            RoundedRectangle(cornerRadius: 5).fill(.tint.opacity(0.3))
+        }
+    }
+
+    private var cropHint: some View {
+        Text("Drag to select a region — Esc to cancel")
+            .font(.callout)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(.thinMaterial, in: Capsule())
+            .padding(.top, 12)
+            .allowsHitTesting(false)
     }
 
     private var pageIndicator: some View {
@@ -183,11 +232,19 @@ struct DocumentWindow: View {
 
     /// Invisible buttons that exist only to carry keyboard shortcuts.
     private var hiddenShortcuts: some View {
-        Button("") { searchFocused = true }
-            .keyboardShortcut("f", modifiers: .command)
-            .opacity(0)
-            .frame(width: 0, height: 0)
-            .accessibilityHidden(true)
+        ZStack {
+            Button("") { searchFocused = true }
+                .keyboardShortcut("f", modifiers: .command)
+            Button("") {
+                if viewer.captureTextSelection() { chatVisible = true }
+            }
+            .keyboardShortcut("l", modifiers: .command)
+            Button("") { viewer.toggleCropMode() }
+                .keyboardShortcut("a", modifiers: [.command, .shift])
+        }
+        .opacity(0)
+        .frame(width: 0, height: 0)
+        .accessibilityHidden(true)
     }
 
     // MARK: Loading
