@@ -43,7 +43,7 @@ struct ChatPanelView: View {
                 LazyVStack(alignment: .leading, spacing: 12) {
                     if engine.providerID == "mock" {
                         Label(
-                            "No provider configured — answers are placeholders. Add an Anthropic API key in Settings (⌘,), then reopen this document.",
+                            "No provider configured — answers are placeholders. Install Claude Code and run `claude` once to sign in, or add an Anthropic API key in Settings (⌘,). Then reopen this document.",
                             systemImage: "info.circle"
                         )
                         .font(.caption)
@@ -273,10 +273,17 @@ private struct QACardView: View {
                 }
             }
 
+            ForEach(card.notices, id: \.self) { notice in
+                Label(notice, systemImage: "gauge.with.needle")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
+
             if let error = card.error {
                 Label(error, systemImage: "exclamationmark.triangle")
                     .font(.caption)
                     .foregroundStyle(.red)
+                    .textSelection(.enabled)
             }
 
             if let fraction = card.cachedFraction {

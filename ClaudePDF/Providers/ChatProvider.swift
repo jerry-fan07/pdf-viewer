@@ -40,6 +40,9 @@ enum ChatEvent {
     case textDelta(String)
     case citation(pageNumber: Int, citedText: String)   // 1-indexed
     case usage(inputTokens: Int, cacheReadTokens: Int, cacheWriteTokens: Int, outputTokens: Int)
+    /// Provider-side condition worth showing beside the answer — e.g. a
+    /// subscription rate-limit warning. Not an error; the answer still arrives.
+    case notice(String)
     case done
 }
 

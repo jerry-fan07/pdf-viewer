@@ -1,42 +1,8 @@
 import Foundation
 
-/// Remembers which `file_id` a local PDF was uploaded as, so reopening a document
-/// doesn't re-send its bytes. Files API uploads persist until deleted, so the id
-/// stays good across launches; the key changes if the file is edited or replaced.
-enum AnthropicFileCache {
-    private static let defaultsKey = "anthropic.fileIDs"
-
-    static func key(for url: URL) -> String? {
-        let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
-        let size = values?.fileSize ?? -1
-        let modified = values?.contentModificationDate?.timeIntervalSince1970 ?? -1
-        guard size >= 0 else { return nil }
-        return "\(url.standardizedFileURL.path)|\(size)|\(Int(modified))"
-    }
-
-    static func lookup(_ url: URL) -> String? {
-        guard let key = key(for: url) else { return nil }
-        return stored()[key]
-    }
-
-    static func store(_ fileID: String, for url: URL) {
-        guard let key = key(for: url) else { return }
-        var map = stored()
-        map[key] = fileID
-        UserDefaults.standard.set(map, forKey: defaultsKey)
-    }
-
-    static func invalidate(_ url: URL) {
-        guard let key = key(for: url) else { return }
-        var map = stored()
-        map.removeValue(forKey: key)
-        UserDefaults.standard.set(map, forKey: defaultsKey)
-    }
-
-    private static func stored() -> [String: String] {
-        UserDefaults.standard.dictionary(forKey: defaultsKey) as? [String: String] ?? [:]
-    }
-}
+/// Files API uploads persist until deleted, so a `file_id` stays good across
+/// launches — reopening a document never re-sends its bytes.
+let anthropicFileCache = DocumentHandleCache(namespace: "anthropic.fileIDs")
 
 /// Minimal `multipart/form-data` body for `POST /v1/files`.
 enum AnthropicMultipart {

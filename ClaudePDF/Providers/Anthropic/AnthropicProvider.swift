@@ -55,13 +55,13 @@ struct AnthropicProvider: ChatProvider {
         }
 
         let title = document.fileURL.lastPathComponent
-        if let cached = AnthropicFileCache.lookup(document.fileURL) {
+        if let cached = anthropicFileCache.lookup(document.fileURL) {
             return DocumentAttachment(providerID: id, handle: cached,
                                       title: title, sourceURL: document.fileURL)
         }
 
         let fileID = try await upload(document.fileURL, apiKey: apiKey)
-        AnthropicFileCache.store(fileID, for: document.fileURL)
+        anthropicFileCache.store(fileID, for: document.fileURL)
         return DocumentAttachment(providerID: id, handle: fileID,
                                   title: title, sourceURL: document.fileURL)
     }
@@ -131,7 +131,7 @@ struct AnthropicProvider: ChatProvider {
             // A stale file_id (deleted server-side) shouldn't wedge the document
             // forever — drop the cache entry so the next open re-uploads.
             if http.statusCode == 404, let source = attachment.sourceURL {
-                AnthropicFileCache.invalidate(source)
+                anthropicFileCache.invalidate(source)
             }
             throw AnthropicError.api(status: http.statusCode, detail: Self.errorDetail(from: data))
         }

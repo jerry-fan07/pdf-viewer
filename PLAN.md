@@ -203,11 +203,14 @@ OpenAI-compatible endpoint at `https://api.deepseek.com/chat/completions`. Curre
 
 ```bash
 claude -p "Read the PDF at <path>. Reply only 'ready'." \
-  --output-format json \
+  --output-format stream-json --include-partial-messages --verbose \
   --allowedTools "Read" \
   --add-dir <folder containing the PDF>
-# response JSON carries session_id and cost_usd — persist session_id per document
+# every NDJSON record carries session_id (the first, type:"system"/subtype:"init",
+# already has it) — persist it per document. Same output format as ask, so one parser.
 ```
+
+All invocations run in a **fixed working directory** (`~/Library/Application Support/ClaudePDF/cli`), never the document's folder: Claude Code files sessions under a slug of the cwd, so prime and ask must share one for `--resume` to resolve — and a dedicated directory keeps unrelated CLAUDE.md/project context out of the conversation.
 
 (One upfront read is wasted if the user never asks a question — acceptable default, with a "lazy attach" setting if it bothers anyone.)
 
@@ -227,7 +230,7 @@ Mechanics that matter:
 - **Auth:** after the user runs `claude` login once, headless calls use subscription OAuth automatically. **Sanitize the child environment** — an inherited `ANTHROPIC_API_KEY` silently takes precedence in `-p` mode and would misbill to the API key. **Never pass `--bare`** (it disables OAuth credential reading); Anthropic has signaled bare may become the `-p` default in a future release, so pin/check the CLI version and keep `claude setup-token` → `CLAUDE_CODE_OAUTH_TOKEN` (1-year subscription token, Pro/Max+) as the migration path *within Claude Code* if that lands.
 - **Files:** the PDF and any crop PNG are handed over as local paths in the prompt; Claude ingests them via its Read tool (images natively; PDFs whole up to 10 pages, in ≤20-page ranges up to 1000 pages, text-only beyond). Write crops to a temp folder covered by `--add-dir`.
 - **Caching / "project" semantics:** Claude Code requests the 1-hour cache TTL on subscription automatically. Prime once per document, then `--resume <primed> --fork-session` per question: follow-ups reuse the cached document read, pay mostly for the new question (spike measured ~10× cheaper than the prime), and stay independent of each other — matching the other providers exactly. After ~1 hour idle, the next fork re-processes the primed history uncached — same economics caveat as §7.
-- **Streaming:** parse the newline-delimited `stream-json` output into `ChatEvent`s (assistant text deltas → `textDelta`; final result object → `usage`/`done`). Note the `--output-format json` envelope in CLI 2.1.x is a JSON *array* whose last element is the `type:"result"` object — parse accordingly. Support cancellation by terminating the child process. Per-question latency at CLI defaults is ~20–30 s (spike-measured) — stream tokens immediately and expose `--model`/`--effort` as latency levers in settings.
+- **Streaming:** parse the newline-delimited `stream-json` output into `ChatEvent`s. With `--include-partial-messages`, records of `type:"stream_event"` wrap a **raw Anthropic SSE event** in `.event`, so text extraction is the same shape as the API path. **`message_stop` must not end the answer** — the CLI runs an agent loop, so one question can contain several message cycles; the final `type:"result"` record is the authoritative end, usage and cost. Support cancellation by terminating the child process. Per-question latency at CLI defaults is ~20–30 s (spike-measured) — stream tokens immediately and expose `--effort` as a latency lever in settings.
 - **Onboarding/errors:** detect the CLI (`which claude`, version check) and the login state; walk the user through install/login instead of failing opaquely. Surface subscription rate-limit messages verbatim.
 
 **Terms of service posture (as of Aug 2026):** using *your own* subscription via the CLI/Agent SDK in an app you run yourself is within policy. What is **not** allowed without Anthropic approval is offering claude.ai login or subscription rate limits to *your* users — so the app ships as "bring your own Claude Code install," with no "Sign in with Claude" UI. Note the policy is in flux: Anthropic announced a billing restructure for third-party Agent SDK usage in May 2026 and paused it on June 15, 2026, promising notice before changes. Treat this as a monitored risk (§9).
@@ -269,7 +272,7 @@ Ordered by risk: the least-documented leg (subscription/CLI) gets a validation s
 
 **Phase 4 — DeepSeek provider:** page-annotated text extraction, OpenAI-compatible streaming client, capability-based UI degradation for crops. *Exit: repeated questions show DeepSeek cache hits; crop mode cleanly redirects.*
 
-**Phase 5 — Claude subscription provider:** CLI detection/onboarding, process wrapper with streamed JSON parsing, file handoff, cancellation, error surfaces (not installed / not logged in / rate-limited). *Exit: with no API key configured, the full highlight→ask→answer loop works on a subscription account.*
+**Phase 5 — Claude subscription provider: ✅ DONE (2026-08-07).** CLI detection across the usual install paths (a GUI app has no shell `PATH`) with a 2.1.0 minimum-version check; `Process` wrapper with a **sanitized child environment** (an inherited `ANTHROPIC_API_KEY` would silently outrank subscription auth in `-p` mode and misbill), concurrent stderr drain, and task-cancellation → `terminate()`; prime once per document then `--resume <sid> --fork-session` per question; crop PNGs written to a temp dir covered by `--add-dir`; `rate_limit_event` surfaced as a per-answer notice; effort picker as the latency lever; provider picker in Settings (Automatic prefers the subscription when the CLI is present). Machine-verified: clean build; **41/41 unit tests pass**, including a live `claude --version` run that exercises the real process wrapper for free. **Exit criterion met live** (real subscription, no API key configured): prime + forked question against a generated PDF returned the correct answer with a page reference, made **zero tool calls during the ask** (no PDF re-read), produced a new forked session id, reported **26,941 cache-read vs 78 cache-write tokens**, and left the primed transcript at 13 lines with 0 occurrences of the forked question. Verified at the CLI-contract level rather than through the SwiftUI app — the in-app pass (open a PDF → highlight → ⌘L → ask) is still a manual step. Known limitations: no clickable citation chips on this path (page numbers are prompted prose, per the capability matrix); the provider is fixed per window at open.
 
 **Phase 6 — Polish:** per-document history store, cost indicators, pre-warm knob, OCR for scanned PDFs, keyboard shortcuts, app icon, notarized build.
 

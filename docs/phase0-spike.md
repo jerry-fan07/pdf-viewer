@@ -20,6 +20,16 @@ Sanitized child environment (`env -i` with only `HOME`/`PATH`/`USER`/`TERM` — 
 4. **Latency is 20–32 s per question** at CLI defaults (Opus 5). Streaming output is mandatory for acceptable UX; expose `--model` and `--effort <level>` in settings as latency levers (both exist in this CLI version).
 5. **Images work as file paths** — the crop PNG was read and described accurately via the Read tool. Write crops to a temp dir covered by `--add-dir`.
 
+## Phase 5 implementation findings (2026-08-07, same CLI 2.1.223)
+
+Captured while building `ClaudeCodeProvider`; these supersede parts of finding 3 above.
+
+1. **Use `stream-json` for the prime too — the JSON-array envelope is avoidable.** Every NDJSON record carries `session_id`, and the first one (`type: "system"`, `subtype: "init"`) has it. So attach and ask share one parser and one output format; nothing needs to parse the trailing element of a JSON array.
+2. **`--include-partial-messages` is required for live tokens.** Without it the stream carries only complete `assistant` messages. With it, records of `type: "stream_event"` wrap a **raw Anthropic SSE event** in `.event` — identical shapes to `/v1/messages` (`content_block_delta` / `text_delta`, `message_start`, `message_delta`, `message_stop`).
+3. **`message_stop` must not end the answer.** The CLI runs an agent loop, so one question can contain several `message_start…message_stop` cycles. The authoritative end (and usage/cost) is the final `type: "result"` record.
+4. **A fixed working directory works, and is better than the document's directory.** Claude Code files sessions under a slug of the cwd, so prime and ask must share one. Using a dedicated app directory (`~/Library/Application Support/ClaudePDF/cli`) instead of the PDF's own folder keeps unrelated CLAUDE.md/project context out of the conversation. Verified end-to-end: prime from that cwd with the PDF reached via `--add-dir`, then `--resume <sid> --fork-session` from the same cwd → correct answer with a page reference, **zero tool calls during the ask** (no PDF re-read), a new forked session id, 26,941 cache-read vs 78 cache-write tokens, and the primed transcript still 13 lines with 0 occurrences of the forked question.
+5. **`rate_limit_event` is the subscription-limit surface.** `rate_limit_info` carries `status` (`allowed` / `allowed_warning` / …), `rateLimitType` (e.g. `seven_day`), `utilization` (0–1) and `resetsAt` (unix seconds). Worth rendering when `status != "allowed"`.
+
 ## Spike artifacts
 
 Scratch-only (generated PDF/PNG and raw JSON transcripts lived in the session scratchpad; regenerate with the commands above if needed).

@@ -18,6 +18,7 @@ struct QACard: Identifiable {
     let question: Question
     var answer: String = ""
     var citations: [Citation] = []
+    var notices: [String] = []
     var inputTokens: Int?
     var cacheReadTokens: Int?
     var cacheWriteTokens: Int?
@@ -130,6 +131,8 @@ final class ChatEngine: ObservableObject {
                 card.cacheReadTokens = cacheRead
                 card.cacheWriteTokens = cacheWrite
                 card.outputTokens = output
+            case .notice(let text):
+                if !card.notices.contains(text) { card.notices.append(text) }
             case .done:
                 card.isStreaming = false
             }
