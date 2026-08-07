@@ -7,12 +7,21 @@ options:
 settings:
   base:
     SWIFT_VERSION: "5.10"
+packages:
+  # Native LaTeX typesetting for chat answers. The one dependency the app takes:
+  # the alternative (KaTeX in a WKWebView per chat card) is heavier and can't put
+  # math inline in a SwiftUI Text run. See PLAN.md §6.
+  SwiftMath:
+    url: https://github.com/mgriebling/SwiftMath.git
+    from: "1.7.3"
 targets:
   ClaudePDF:
     type: application
     platform: macOS
     sources:
       - path: ClaudePDF
+    dependencies:
+      - package: SwiftMath
     info:
       path: ClaudePDF/Info.plist
       properties:

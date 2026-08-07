@@ -12,7 +12,7 @@ This is constraint-driven, not arbitrary: the subscription path works by driving
 
 - **Language/UI:** Swift 5.10+, SwiftUI app lifecycle, macOS 14+ target.
 - **PDF rendering:** PDFKit (`PDFView` wrapped in `NSViewRepresentable`). No third-party PDF engine.
-- **Networking:** `URLSession` directly (there is no official Anthropic Swift SDK; raw HTTPS + SSE is the supported path for Swift). No heavy dependencies — the app should build with zero or near-zero SPM packages.
+- **Networking:** `URLSession` directly (there is no official Anthropic Swift SDK; raw HTTPS + SSE is the supported path for Swift). No heavy dependencies — the app should build with zero or near-zero SPM packages. **One package is taken:** [SwiftMath](https://github.com/mgriebling/SwiftMath) for LaTeX typesetting in chat answers (§6). The dependency-free alternative, KaTeX in a `WKWebView` per chat card, is heavier at runtime and cannot place math inline inside a SwiftUI `Text` run.
 - **Persistence:** SwiftData (or plain JSON files) for per-document chat history; Keychain for API keys.
 - **Distribution:** Developer ID + notarization, **outside the Mac App Store**. This is forced by the headline feature: the subscription provider spawns the user's `claude` CLI and relies on its stored OAuth login, which the App Sandbox (required for MAS) does not permit. A sandboxed build would have to ship with the subscription provider disabled.
 
@@ -244,6 +244,13 @@ Mechanics that matter:
 - Right-side collapsible panel; input field pinned at bottom; each Q&A rendered as an independent card (matching the independent-context model — no fake "conversation" affordance in v1).
 - Every card shows its anchor: the highlighted snippet or crop thumbnail it was asked about, plus provider/model badge.
 - Streaming text with Markdown rendering (headings, code, lists — via `AttributedString(markdown:)` or a small renderer).
+- **LaTeX rendering** — non-negotiable for a PDF reader pointed at papers; models answer in TeX whether or not you ask them to. See [docs/latex-rendering.png](docs/latex-rendering.png).
+  - **Segment before Markdown.** `AttributedString(markdown:)` destroys TeX — `\alpha` loses its backslash, `x_1` and `a * b` become emphasis. `LaTeXSegmenter` carves math out of the answer *first*; only the prose runs reach the Markdown parser. Getting this order wrong is the whole bug class.
+  - Delimiters: `$$…$$`, `\[…\]`, and bare `\begin{align}…\end{align}` render as display blocks; `\(…\)` and `$…$` render inline. Models emit all of these — supporting only `$` misses most of what Claude writes.
+  - **Inline math flows with the sentence** (`Text(Image(…))` concatenation with a `.baselineOffset` from the typeset descent), rather than breaking the paragraph into a stack of views. Display math is its own centred block, scaled down if wider than the panel.
+  - **Streaming is the hard case.** A `$$` whose closer has not arrived yet must stay prose, or equations flicker in and out mid-answer. Unclosed delimiters are never treated as math; the renderer caches by (latex, size, appearance) because every delta re-renders the whole answer.
+  - **`$` is usually money.** Inline `$…$` requires non-space neighbours and a non-digit after the closer, and a rejected opener falls back to prose without swallowing real math later in the sentence. Code spans are opaque.
+  - Unparseable TeX falls back to showing the source in monospace — never a blank gap.
 - Citation chips (Anthropic path): `p. 12` chips that scroll the viewer and flash-highlight the cited region's page.
 - Per-document history persisted locally; reopening a document restores its Q&A cards (history is display-only — it is never re-sent to the model).
 - A subtle per-answer cost/cache indicator (e.g. "97% cached") built from `usage` — it makes the caching model legible and catches cache-busting regressions.

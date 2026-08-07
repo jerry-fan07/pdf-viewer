@@ -30,7 +30,8 @@ struct MockProvider: ChatProvider {
                     preamble += "."
                 }
                 preamble += "\nThis is a placeholder answer streamed word by word. "
-                preamble += "Configure a real provider in Settings once Phase 3+ lands."
+                preamble += "Configure a real provider in Settings once Phase 3+ lands.\n\n"
+                preamble += Self.latexSample
                 for word in preamble.split(separator: " ", omittingEmptySubsequences: false) {
                     try Task.checkCancellation()
                     continuation.yield(.textDelta(String(word) + " "))
@@ -44,4 +45,21 @@ struct MockProvider: ChatProvider {
             continuation.onTermination = { _ in task.cancel() }
         }
     }
+
+    /// Every LaTeX shape the answer renderer has to survive: both inline delimiters, both
+    /// display delimiters, a bare environment, `$` used as money right next to real math,
+    /// and math inside a code span. Streamed word by word like everything else, so a
+    /// half-arrived `$$` is exercised on every run.
+    private static let latexSample = """
+        Inline TeX-style: \\(E = mc^2\\); dollar-style: $\\alpha_1 + \\beta^2$.
+
+        $$\\int_0^\\infty e^{-x^2}\\,dx = \\frac{\\sqrt{\\pi}}{2}$$
+
+        \\[ \\sum_{n=1}^{N} \\frac{1}{n^2} = \\frac{\\pi^2}{6} \\]
+
+        \\begin{aligned} a &= b + c \\\\ d &= e - f \\end{aligned}
+
+        Money stays money: it costs $5 and $6, so $x = 5n$ is the total. \
+        Code stays code: `$not_math$`. Markdown still works: **bold**, *italic*.
+        """
 }
