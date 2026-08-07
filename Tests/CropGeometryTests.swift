@@ -1,5 +1,6 @@
 import CoreGraphics
 import XCTest
+@testable import ClaudePDF
 
 /// Pure-geometry tests: no PDFView, no window. The pixel-truth counterpart that proves these
 /// formulas match what PDFKit actually draws lives in CropRendererTests.

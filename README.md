@@ -16,13 +16,15 @@ xcodebuild -project ClaudePDF.xcodeproj -scheme ClaudePDF build
 xcodebuild -project ClaudePDF.xcodeproj -scheme ClaudePDF -destination 'platform=macOS' test
 ```
 
-Or open `ClaudePDF.xcodeproj` in Xcode after generating. The project file is generated from [project.yml](project.yml) and not checked in.
+Or open `ClaudePDF.xcodeproj` in Xcode after generating. The project file is generated from [project.yml](project.yml) and not checked in. The only SPM dependency is [SwiftMath](https://github.com/mgriebling/SwiftMath), used to typeset LaTeX in chat answers.
 
-Tests live in `ClaudePDFTests` and run headlessly — the geometry and rendering sources are compiled into the test bundle rather than tested through a host app, so the run never has to launch the document-based UI.
+Tests live in `Tests` and run against the app as their test host — no GUI automation, but the host means `MathRenderer` is exercised with the same font bundle the shipped app loads.
 
 ## Status
 
 Phases 0–2 complete: the viewer scrolls, searches and restores position; text selections (⌘L) and region screenshots (⌘⇧A) both produce anchored questions, rendered against a mock provider. Real providers land in Phases 3–5 — see the phase list in [PLAN.md](PLAN.md).
+
+Chat answers render Markdown **and LaTeX** — inline math flows within the sentence, display math gets its own block ([screenshot](docs/latex-rendering.png)). The design notes, including why math must be segmented out before Markdown parsing, are in [PLAN.md §6](PLAN.md).
 
 ## Asking about the document
 

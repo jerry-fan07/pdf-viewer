@@ -2,6 +2,7 @@ import AppKit
 import CoreGraphics
 import PDFKit
 import XCTest
+@testable import ClaudePDF
 
 /// Pixel-truth tests. These are what actually prove the geometry: a marker of known colour at
 /// known page coordinates must come out in the middle of the exported PNG. If PDFKit's draw

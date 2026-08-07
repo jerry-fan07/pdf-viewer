@@ -4,6 +4,7 @@ import Foundation
 import ImageIO
 import PDFKit
 import XCTest
+@testable import ClaudePDF
 
 /// A generated single-page PDF with markers at known page coordinates, so crop output can be
 /// asserted by pixel colour rather than by eyeballing. All coordinates below are *box-relative*

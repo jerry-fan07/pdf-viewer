@@ -1,6 +1,7 @@
 import AppKit
 import PDFKit
 import XCTest
+@testable import ClaudePDF
 
 /// The Phase 2 exit criterion, tested at the level the app actually uses:
 /// "both modes produce a correct `Question` from any zoom level."
