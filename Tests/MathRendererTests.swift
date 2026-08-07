@@ -56,4 +56,54 @@ final class MathRendererTests: XCTestCase {
         XCTAssertNotNil(render("\\dfrac{1}{2}", display: true))
         XCTAssertEqual(LaTeXNormalizer.normalize("x = y \\label{eq:one}"), "x = y")
     }
+
+    /// Each of these is a command SwiftMath rejects outright. Because it fails an equation
+    /// *whole*, a single missing alias turns a display block into a wall of raw TeX — which
+    /// is exactly how `\operatorname` was found.
+    func testCommandsSwiftMathRejectsAreAliased() {
+        for latex in ["\\operatorname{vol}(x)", "\\operatorname*{argmin}_x f",
+                      "\\boldsymbol{x} = \\boldsymbol{A}\\boldsymbol{s}", "\\pmb{x}",
+                      "\\lVert x \\rVert_2", "\\lvert x \\rvert", "\\mathscr{S}",
+                      "\\argmin_x f(x)", "\\argmax_x f(x)", "a \\dots b", "a \\dotsc b",
+                      "\\sum_{\\substack{i<j}} a", "\\mathop{\\mathrm{vol}}(x)",
+                      "\\bigl( \\frac{x}{y} \\bigr)", "\\Biggl( x \\Biggr)",
+                      "a \\stackrel{\\Delta}{=} b", "a \\overset{d}{=} b",
+                      "a \\xrightarrow{f} b", "a \\hspace{1em} b", "a \\phantom{xx} b"] {
+            XCTAssertNotNil(render(latex, display: true), "failed to typeset \(latex)")
+        }
+    }
+
+    /// The alias pass has to respect TeX's own rule that a command name ends at the first
+    /// non-letter. A plain textual swap of `\big` would turn `\bigcup` into a stray `cup`.
+    func testAliasesDoNotEatLongerCommandNames() throws {
+        XCTAssertEqual(LaTeXNormalizer.normalize("\\bigcup_i A_i \\bigl( x \\bigr)"), "\\bigcup_i A_i ( x )")
+        XCTAssertNotNil(render("\\bigcup_{i} A_i", display: true))
+        XCTAssertNotNil(render("\\bigoplus_i V_i", display: true))
+    }
+
+    /// SwiftMath has no notion of `%`: it does not error on a comment, it typesets the prose
+    /// after it as italic math, which is worse than failing.
+    func testCommentsAreStripped() {
+        XCTAssertEqual(LaTeXNormalizer.normalize("% linear mixing model\na = b"), "a = b")
+        XCTAssertEqual(LaTeXNormalizer.normalize("50\\% of x"), "50\\% of x")
+        XCTAssertNotNil(render("\\begin{aligned} a &= b \\\\ % note\n c &= d \\end{aligned}", display: true))
+    }
+
+    /// The equation from the bug report: an MVES criterion, which needs `\operatorname`,
+    /// `\bm`, `\label` stripping and the `equation`/`aligned` environments all at once.
+    func testMVESCriterionTypesets() throws {
+        let latex = """
+        \\begin{equation}
+        \\begin{aligned}
+        \\min_{\\bm{b}_1,\\ldots,\\bm{b}_N \\in \\mathbb{R}^M} \\quad
+            & \\operatorname{vol}(\\operatorname{conv}\\{\\bm{b}_1,\\ldots,\\bm{b}_N\\}) \\\\
+        \\text{s.t.} \\quad
+            & \\bm{x}_n \\in \\operatorname{conv}\\{\\bm{b}_1,\\ldots,\\bm{b}_N\\},
+              \\quad n = 1,\\ldots,L,
+        \\end{aligned}
+        \\label{eq:mves}
+        \\end{equation}
+        """
+        XCTAssertNotNil(render(latex, display: true))
+    }
 }

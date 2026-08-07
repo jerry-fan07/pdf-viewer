@@ -164,7 +164,8 @@ enum LaTeXSegmenter {
     }
 
     /// Environments a model may emit bare, with no surrounding `$$`.
-    private static let mathEnvironments: Set<String> = [
+    /// Shared with `MarkdownBlocks`, which recognises the same set at the start of a line.
+    static let mathEnvironments: Set<String> = [
         "equation", "equation*", "displaymath", "align", "align*", "aligned",
         "alignat", "alignat*", "gather", "gather*", "gathered", "multline", "multline*",
         "split", "eqnarray", "eqnarray*", "cases", "array", "displaylines", "eqalign",

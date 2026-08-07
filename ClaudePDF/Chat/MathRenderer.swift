@@ -98,6 +98,12 @@ enum MathRenderer {
 }
 
 /// Bridges the TeX models actually emit to the subset SwiftMath parses.
+///
+/// SwiftMath fails an equation *whole*: one `\operatorname` it doesn't know and the entire
+/// display block falls back to raw source. So the cost of a missing alias is not a slightly
+/// wrong glyph, it's a wall of TeX in the middle of an answer. Every entry below is a
+/// command that was checked to fail against SwiftMath 1.7.3 and to have a near-equivalent
+/// that renders; see `MathRendererTests`.
 enum LaTeXNormalizer {
 
     /// Environments SwiftMath understands, keyed by what a model is likely to write.
@@ -110,15 +116,41 @@ enum LaTeXNormalizer {
     /// Wrappers that carry no layout of their own — strip them and typeset the body.
     private static let transparentEnvironments = ["equation*", "equation", "displaymath", "math"]
 
-    private static let commandAliases: [String: String] = [
-        "\\dfrac": "\\frac", "\\tfrac": "\\frac", "\\thinspace": "\\,", "\\lparen": "(", "\\rparen": ")",
+    /// `\cmd` → `\other`, applied in order: the argument (if any) is already braced, so
+    /// swapping the command name is enough. `\operatorname*` has to precede `\operatorname`
+    /// or the starred form is left as `\mathrm*`.
+    private static let commandAliases: [(from: String, to: String)] = [
+        ("\\operatorname*", "\\mathrm"), ("\\operatorname", "\\mathrm"),
+        ("\\boldsymbol", "\\bm"), ("\\pmb", "\\bm"),
+        ("\\mathscr", "\\mathcal"),          // no script face here; calligraphic is the near miss
+        ("\\dfrac", "\\frac"), ("\\tfrac", "\\frac"),
+        ("\\lVert", "\\|"), ("\\rVert", "\\|"), ("\\lvert", "|"), ("\\rvert", "|"),
+        ("\\argmin", "\\arg\\min"), ("\\argmax", "\\arg\\max"),
+        ("\\dots", "\\ldots"), ("\\dotsc", "\\ldots"), ("\\dotsb", "\\cdots"),
+        ("\\thinspace", "\\,"), ("\\lparen", "("), ("\\rparen", ")"),
     ]
 
-    /// Commands that only matter in a real LaTeX document and make the parser fail here.
-    private static let droppedCommands = ["\\nonumber", "\\notag", "\\displaystyle", "\\limits", "\\!"]
+    /// Commands whose braced argument has to go with them — dropping only the name would
+    /// leave the argument typeset as stray italic letters. `\stackrel{d}{=}` keeps its
+    /// *second* argument, which is what makes it degrade to a plain `=` rather than vanish.
+    private static let rewrittenWithArgument: [(from: String, to: String)] = [
+        ("\\label", ""), ("\\tag*", ""), ("\\tag", ""), ("\\phantom", ""),
+        ("\\hspace*", "\\;"), ("\\hspace", "\\;"), ("\\vspace*", ""), ("\\vspace", ""),
+        ("\\xrightarrow", "\\to"), ("\\xleftarrow", "\\leftarrow"),
+        ("\\stackrel", ""), ("\\overset", ""), ("\\underset", ""),
+    ]
+
+    /// Commands that only matter in a real LaTeX document, or whose only job is sizing that
+    /// SwiftMath does for itself. The name goes; any braced argument stays and is typeset.
+    private static let droppedCommands = [
+        "\\nonumber", "\\notag", "\\displaystyle", "\\textstyle", "\\scriptstyle",
+        "\\limits", "\\nolimits", "\\!", "\\substack", "\\mathop",
+        "\\bigl", "\\bigr", "\\Bigl", "\\Bigr", "\\biggl", "\\biggr", "\\Biggl", "\\Biggr",
+        "\\bigg", "\\Bigg", "\\big", "\\Big",
+    ]
 
     static func normalize(_ latex: String) -> String {
-        var text = latex
+        var text = stripComments(latex)
 
         for environment in transparentEnvironments {
             text = text.replacingOccurrences(of: "\\begin{\(environment)}", with: "")
@@ -128,30 +160,76 @@ enum LaTeXNormalizer {
             text = text.replacingOccurrences(of: "\\begin{\(from)}", with: "\\begin{\(to)}")
             text = text.replacingOccurrences(of: "\\end{\(from)}", with: "\\end{\(to)}")
         }
-        text = stripArguments(of: ["\\label", "\\tag", "\\tag*"], in: text)
+        for (from, to) in rewrittenWithArgument {
+            text = rewrite(from, withArgumentTo: to, in: text)
+        }
         for command in droppedCommands {
-            text = text.replacingOccurrences(of: command, with: "")
+            text = replaceCommand(command, with: "", in: text)
         }
         for (from, to) in commandAliases {
-            text = text.replacingOccurrences(of: from, with: to)
+            text = replaceCommand(from, with: to, in: text)
         }
         return text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    /// Removes `\label{…}`-style calls, brace argument included.
-    private static func stripArguments(of commands: [String], in text: String) -> String {
-        var result = text
-        for command in commands {
-            while let range = result.range(of: command + "{") {
-                var depth = 1
-                var index = range.upperBound
-                while index < result.endIndex, depth > 0 {
-                    if result[index] == "{" { depth += 1 }
-                    if result[index] == "}" { depth -= 1 }
-                    index = result.index(after: index)
-                }
-                result.removeSubrange(range.lowerBound..<index)
+    /// Drops `%` to end of line, TeX's comment. SwiftMath has no notion of comments — it
+    /// does not error on one, it silently typesets the prose after the `%` as italic math,
+    /// which is worse. `\%` is a literal percent sign and survives.
+    private static func stripComments(_ text: String) -> String {
+        var out = ""
+        var index = text.startIndex
+        while index < text.endIndex {
+            let c = text[index]
+            if c == "\\", text.index(after: index) < text.endIndex {
+                out.append(c)
+                index = text.index(after: index)
+                out.append(text[index])
+                index = text.index(after: index)
+                continue
             }
+            if c == "%" {
+                while index < text.endIndex, text[index] != "\n" { index = text.index(after: index) }
+                continue                         // the newline itself is kept: it separates align rows
+            }
+            out.append(c)
+            index = text.index(after: index)
+        }
+        return out
+    }
+
+    /// Textual command replacement that respects TeX's own tokenizing rule: a command name
+    /// made of letters ends at the first non-letter. Without this, dropping `\big` also
+    /// mangles `\bigcup` into `cup`, and aliasing `\dots` eats the `\dotsb` prefix.
+    private static func replaceCommand(_ command: String, with replacement: String, in text: String) -> String {
+        let needsBoundary = command.last?.isLetter ?? false
+        var result = ""
+        var index = text.startIndex
+        while let range = text.range(of: command, range: index..<text.endIndex) {
+            if needsBoundary, range.upperBound < text.endIndex, text[range.upperBound].isLetter {
+                result.append(contentsOf: text[index..<range.upperBound])
+                index = range.upperBound
+                continue
+            }
+            result.append(contentsOf: text[index..<range.lowerBound])
+            result.append(replacement)
+            index = range.upperBound
+        }
+        result.append(contentsOf: text[index...])
+        return result
+    }
+
+    /// Removes `\cmd{…}` — one balanced brace group — and puts `replacement` in its place.
+    private static func rewrite(_ command: String, withArgumentTo replacement: String, in text: String) -> String {
+        var result = text
+        while let range = result.range(of: command + "{") {
+            var depth = 1
+            var index = range.upperBound
+            while index < result.endIndex, depth > 0 {
+                if result[index] == "{" { depth += 1 }
+                if result[index] == "}" { depth -= 1 }
+                index = result.index(after: index)
+            }
+            result.replaceSubrange(range.lowerBound..<index, with: replacement)
         }
         return result
     }
