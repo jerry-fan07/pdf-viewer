@@ -69,11 +69,11 @@ struct DocumentWindow: View {
                     ContentUnavailableView("Could not load PDF", systemImage: "doc.questionmark")
                 }
             }
-            .frame(minWidth: 400, maxWidth: .infinity, maxHeight: .infinity)
+            .frame(minWidth: 260, maxWidth: .infinity, maxHeight: .infinity)
 
             if chatVisible {
                 ChatPanelView(engine: engine, viewer: viewer)
-                    .frame(minWidth: 300, idealWidth: 360, maxWidth: 480)
+                    .frame(minWidth: 300, idealWidth: 360, maxWidth: 900)
             }
         }
         .toolbar { toolbarContent }
