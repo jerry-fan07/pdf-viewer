@@ -18,4 +18,4 @@ Or open `ClaudePDF.xcodeproj` in Xcode after generating. The project file is gen
 
 ## Status
 
-Phase 0 (spike) and initial scaffold complete: the viewer and chat panel work against a mock provider. Real providers land in Phases 3–5 — see the phase list in [PLAN.md](PLAN.md).
+Phases 0–5 are done: the viewer, selection/crop, and all three providers (Anthropic API, Claude subscription via the Claude Code CLI, DeepSeek) are implemented, with 65 unit tests. The subscription path has been verified live; the two API paths are code-complete with their live cache-hit criteria still unverified. Phase 6 (history, OCR, notarized build) is next — see the phase list in [PLAN.md](PLAN.md).

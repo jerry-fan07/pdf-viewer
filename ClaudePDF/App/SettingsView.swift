@@ -6,8 +6,18 @@ struct SettingsView: View {
     @AppStorage(AppSettings.providerChoiceKey) private var providerChoice = ProviderChoice.automatic.rawValue
     @AppStorage(AppSettings.anthropicModelKey) private var anthropicModel = AnthropicModel.opus5.rawValue
     @AppStorage(AppSettings.claudeCodeEffortKey) private var claudeCodeEffort = ClaudeCodeEffort.cliDefault.rawValue
+    @AppStorage(AppSettings.deepseekModelKey) private var deepseekModel = DeepSeekModel.v4Flash.rawValue
+    @AppStorage(AppSettings.deepseekThinkingKey) private var deepseekThinking = DeepSeekThinking.low.rawValue
 
     private var cliInstalled: Bool { ClaudeCodeCLI.isInstalled }
+
+    /// Makes the cheap-cache-hit economics of PLAN.md §7 visible at the point of choice.
+    private var deepseekPriceLine: String {
+        let model = DeepSeekModel(rawValue: deepseekModel) ?? .v4Flash
+        let price = model.pricing
+        return "About $\(String(format: "%.2f", price.cacheMiss))/M tokens for the first "
+            + "question on a document, $\(String(format: "%.4f", price.cacheHit))/M for the rest."
+    }
 
     var body: some View {
         Form {
@@ -61,7 +71,18 @@ struct SettingsView: View {
             Section("DeepSeek API") {
                 SecureField("API key", text: $deepseekKey)
                     .onSubmit { KeychainStore.set(deepseekKey, for: .deepseekAPIKey) }
-                Text("Text-only provider: region screenshots require Claude.")
+                Picker("Model", selection: $deepseekModel) {
+                    ForEach(DeepSeekModel.allCases) { model in
+                        Text(model.displayName).tag(model.rawValue)
+                    }
+                }
+                Picker("Thinking", selection: $deepseekThinking) {
+                    ForEach(DeepSeekThinking.allCases) { level in
+                        Text(level.displayName).tag(level.rawValue)
+                    }
+                }
+                Text("Text-only provider: it reads the PDF's extracted text, so scanned "
+                     + "documents and region screenshots need Claude. \(deepseekPriceLine)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

@@ -43,7 +43,7 @@ struct ChatPanelView: View {
                 LazyVStack(alignment: .leading, spacing: 12) {
                     if engine.providerID == "mock" {
                         Label(
-                            "No provider configured — answers are placeholders. Install Claude Code and run `claude` once to sign in, or add an Anthropic API key in Settings (⌘,). Then reopen this document.",
+                            "No provider configured — answers are placeholders. Install Claude Code and run `claude` once to sign in, or add an Anthropic or DeepSeek API key in Settings (⌘,). Then reopen this document.",
                             systemImage: "info.circle"
                         )
                         .font(.caption)
@@ -81,6 +81,20 @@ struct ChatPanelView: View {
 
     private var composer: some View {
         VStack(spacing: 6) {
+            if let notice = engine.composerNotice {
+                HStack(spacing: 4) {
+                    Label(notice, systemImage: "eye.slash")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                    Spacer(minLength: 0)
+                    Button {
+                        engine.composerNotice = nil
+                    } label: {
+                        Image(systemName: "xmark.circle.fill").font(.caption)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
             if engine.pendingSelection != nil || engine.pendingCrop != nil {
                 attachmentChips
             }
@@ -157,6 +171,7 @@ struct ChatPanelView: View {
         engine.ask(question)
         engine.pendingSelection = nil
         engine.pendingCrop = nil
+        engine.composerNotice = nil
         input = ""
     }
 }

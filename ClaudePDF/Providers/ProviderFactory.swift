@@ -6,6 +6,7 @@ enum ProviderChoice: String, CaseIterable, Identifiable, Sendable {
     case automatic
     case claudeCode
     case anthropicAPI
+    case deepseek
     case mock
 
     var id: String { rawValue }
@@ -15,6 +16,7 @@ enum ProviderChoice: String, CaseIterable, Identifiable, Sendable {
         case .automatic: return "Automatic"
         case .claudeCode: return "Claude subscription (Claude Code)"
         case .anthropicAPI: return "Claude API (API key)"
+        case .deepseek: return "DeepSeek API (API key)"
         case .mock: return "Mock (offline)"
         }
     }
@@ -26,9 +28,20 @@ enum AppSettings {
     static let anthropicModelKey = "anthropic.model"
     static let providerChoiceKey = "provider.choice"
     static let claudeCodeEffortKey = "claudeCode.effort"
+    static let deepseekModelKey = "deepseek.model"
+    static let deepseekThinkingKey = "deepseek.thinking"
 
     static var anthropicModel: AnthropicModel {
         AnthropicModel(rawValue: UserDefaults.standard.string(forKey: anthropicModelKey) ?? "") ?? .opus5
+    }
+
+    static var deepseekModel: DeepSeekModel {
+        DeepSeekModel(rawValue: UserDefaults.standard.string(forKey: deepseekModelKey) ?? "") ?? .v4Flash
+    }
+
+    /// Defaults to `.low`, not DeepSeek's own `high` — see DeepSeekThinking.
+    static var deepseekThinking: DeepSeekThinking {
+        DeepSeekThinking(rawValue: UserDefaults.standard.string(forKey: deepseekThinkingKey) ?? "") ?? .low
     }
 
     static var providerChoice: ProviderChoice {
@@ -39,8 +52,11 @@ enum AppSettings {
         ClaudeCodeEffort(rawValue: UserDefaults.standard.string(forKey: claudeCodeEffortKey) ?? "") ?? .cliDefault
     }
 
-    static var hasAnthropicKey: Bool {
-        let key = KeychainStore.get(.anthropicAPIKey)?
+    static var hasAnthropicKey: Bool { hasKey(.anthropicAPIKey) }
+    static var hasDeepSeekKey: Bool { hasKey(.deepseekAPIKey) }
+
+    private static func hasKey(_ account: KeychainStore.Account) -> Bool {
+        let key = KeychainStore.get(account)?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return !key.isEmpty
     }
@@ -58,14 +74,18 @@ enum ProviderFactory {
             return claudeCode()
         case .anthropicAPI:
             return anthropic()
+        case .deepseek:
+            return deepseek()
         case .mock:
             return MockProvider()
         case .automatic:
             // Subscription first: no key to configure and no per-token billing.
             // A missing/!logged-in CLI still surfaces a readable error at attach,
-            // so only fall through when it isn't installed at all.
+            // so only fall through when it isn't installed at all. Claude before
+            // DeepSeek: it reads pages natively, so it works on any document.
             if ClaudeCodeCLI.isInstalled { return claudeCode() }
             if AppSettings.hasAnthropicKey { return anthropic() }
+            if AppSettings.hasDeepSeekKey { return deepseek() }
             return MockProvider()
         }
     }
@@ -76,5 +96,9 @@ enum ProviderFactory {
 
     private static func anthropic() -> ChatProvider {
         AnthropicProvider(model: AppSettings.anthropicModel)
+    }
+
+    private static func deepseek() -> ChatProvider {
+        DeepSeekProvider(model: AppSettings.deepseekModel, thinking: AppSettings.deepseekThinking)
     }
 }

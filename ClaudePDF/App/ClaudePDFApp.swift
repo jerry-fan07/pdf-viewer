@@ -230,6 +230,25 @@ struct DocumentWindow: View {
         guard let pdfView = viewer.pdfView,
               let crop = CropExtractor.makeCrop(viewRect: rect, overlay: overlay, pdfView: pdfView)
         else { return }
+
+        // Capability-based degradation (PLAN.md §4): a text-only provider still
+        // gets the region's text when there is one, but a figure with no text
+        // layer under it is a dead end worth saying out loud rather than
+        // silently sending a question about an invisible image.
+        if !engine.capabilities.supportsVision {
+            if crop.fallbackText == nil {
+                engine.composerNotice =
+                    "\(engine.providerName) can't see images — switch to Claude for visual questions."
+                engine.pendingCrop = nil
+                chatVisible = true
+                return
+            }
+            engine.composerNotice =
+                "\(engine.providerName) can't see images — it will read the text inside this region."
+        } else {
+            engine.composerNotice = nil
+        }
+
         engine.pendingCrop = crop
         chatVisible = true
         engine.requestComposerFocus()

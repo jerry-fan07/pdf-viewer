@@ -48,6 +48,10 @@ final class ChatEngine: ObservableObject {
     // Composer state: attachments staged for the next question, and a focus signal.
     @Published var pendingSelection: PendingSelection?
     @Published var pendingCrop: PendingCrop?
+    /// A one-line message about what just happened to a staged attachment — e.g.
+    /// a crop a text-only provider can't see (PLAN.md §4). Cleared when the next
+    /// question is sent.
+    @Published var composerNotice: String?
     @Published private(set) var composerFocusRequest = 0
 
     func requestComposerFocus() { composerFocusRequest += 1 }
