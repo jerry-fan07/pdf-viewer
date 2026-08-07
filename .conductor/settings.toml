@@ -1,0 +1,21 @@
+"$schema" = "https://conductor.build/schemas/settings.repo.schema.json"
+
+[scripts]
+# ClaudePDF.xcodeproj is generated from project.yml and gitignored, so every
+# fresh workspace has to generate it before Xcode or xcodebuild can do anything.
+setup = "xcodegen generate"
+# Each workspace builds into its own DerivedData and launches its own instance,
+# so several can run side by side.
+run_mode = "concurrent"
+
+[scripts.run.app]
+# xcodebuild only exists on the Mac — this app can't run in a cloud workspace.
+available_in = [ "local" ]
+default = true
+icon = "play"
+command = "xcodegen generate && xcodebuild -project ClaudePDF.xcodeproj -scheme ClaudePDF -configuration Debug -destination 'platform=macOS' -derivedDataPath DerivedData build && exec ./DerivedData/Build/Products/Debug/ClaudePDF.app/Contents/MacOS/ClaudePDF"
+
+[scripts.run.test]
+available_in = [ "local" ]
+icon = "test-tube"
+command = "xcodegen generate && xcodebuild -project ClaudePDF.xcodeproj -scheme ClaudePDF -destination 'platform=macOS' -derivedDataPath DerivedData test"

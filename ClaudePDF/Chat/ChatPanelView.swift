@@ -113,9 +113,8 @@ private struct QACardView: View {
             if card.answer.isEmpty && card.isStreaming {
                 ProgressView().controlSize(.small)
             } else {
-                Text(markdown(card.answer))
+                AnswerView(answer: card.answer)
                     .font(.body)
-                    .textSelection(.enabled)
             }
 
             if !card.citations.isEmpty {
@@ -146,12 +145,5 @@ private struct QACardView: View {
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
-    }
-
-    private func markdown(_ text: String) -> AttributedString {
-        (try? AttributedString(
-            markdown: text,
-            options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
-        )) ?? AttributedString(text)
     }
 }
