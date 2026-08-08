@@ -27,14 +27,55 @@ struct ChatPanelView: View {
             Text("Ask about this document")
                 .font(.headline)
             Spacer()
-            Text(engine.providerName)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 6)
-                .padding(.vertical, 2)
-                .background(.quaternary, in: Capsule())
+            if engine.hasHistory {
+                Button(role: .destructive) {
+                    engine.clearHistory()
+                } label: {
+                    Image(systemName: "trash")
+                }
+                .buttonStyle(.borderless)
+                .disabled(engine.isStreaming)
+                .help("Clear this document's saved questions and answers")
+            }
+            providerMenu
         }
         .padding(10)
+    }
+
+    /// The provider capsule doubles as the switcher (Phase 7). Disabled while an
+    /// answer streams, for the same reason Clear is: swapping the voice halfway
+    /// through a sentence has no sensible reading.
+    private var providerMenu: some View {
+        Menu {
+            Section("Ask with") {
+                ForEach(ProviderChoice.switchable) { choice in
+                    Button {
+                        engine.switchProvider(to: ProviderFactory.make(choice),
+                                              isWindowOverride: true)
+                    } label: {
+                        if choice.providerID == engine.providerID {
+                            Label(choice.displayName, systemImage: "checkmark")
+                        } else {
+                            Text(choice.displayName)
+                        }
+                    }
+                    .disabled(choice.unavailableReason != nil)
+                    .help(choice.unavailableReason ?? "")
+                }
+            }
+            Divider()
+            // Never let a cache write happen silently (PLAN.md §7).
+            Text("Switching re-prepares this document for the new provider — the "
+                 + "first question after that pays a fresh cache write. Switching "
+                 + "back to one it is already prepared for is free.")
+        } label: {
+            Text(engine.providerName)
+                .font(.caption)
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .disabled(engine.isStreaming)
+        .help("Who answers questions about this document — switch without reopening it")
     }
 
     private var transcript: some View {
@@ -43,7 +84,7 @@ struct ChatPanelView: View {
                 LazyVStack(alignment: .leading, spacing: 12) {
                     if engine.providerID == "mock" {
                         Label(
-                            "No provider configured — answers are placeholders. Install Claude Code and run `claude` once to sign in, or add an Anthropic or DeepSeek API key in Settings (⌘,). Then reopen this document.",
+                            "No provider configured — answers are placeholders. Install Claude Code and run `claude` once to sign in, or add an Anthropic or DeepSeek API key in Settings (⌘,), then pick it from the menu above. This document doesn't need reopening.",
                             systemImage: "info.circle"
                         )
                         .font(.caption)
@@ -55,12 +96,23 @@ struct ChatPanelView: View {
                             Text(status)
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
+                            Button(action: engine.cancelAttach) {
+                                Image(systemName: "xmark.circle.fill").font(.caption)
+                            }
+                            .buttonStyle(.plain)
+                            .help("Stop preparing this document")
                         }
                     }
                     if let attachError = engine.attachError {
-                        Label(attachError, systemImage: "exclamationmark.triangle")
-                            .font(.callout)
-                            .foregroundStyle(.red)
+                        VStack(alignment: .leading, spacing: 4) {
+                            Label(attachError, systemImage: "exclamationmark.triangle")
+                                .font(.callout)
+                                .foregroundStyle(.red)
+                            if engine.canRetryAttach {
+                                Button("Try Again", action: engine.retryAttach)
+                                    .controlSize(.small)
+                            }
+                        }
                     }
                     ForEach(engine.cards) { card in
                         QACardView(card: card, viewer: viewer)
@@ -234,9 +286,16 @@ private struct CropChipView: View {
 
 // MARK: - Cards
 
-private struct QACardView: View {
+/// Internal rather than private so the snapshot harness can render the real card
+/// (`Tests/UISnapshots.swift`) instead of a lookalike.
+struct QACardView: View {
     let card: QACard
     let viewer: PDFViewerController
+
+    /// Shown for a few seconds when a quote can't be found on the page — silence
+    /// after a click reads as a broken link, and "it isn't in the document" is
+    /// exactly the thing this feature exists to tell the reader.
+    @State private var missNotice: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -272,19 +331,24 @@ private struct QACardView: View {
             } else {
                 AnswerView(answer: card.answer)
                     .font(.body)
+                    // A quoted passage in the answer is a link back to the page it
+                    // came from; anything else in an answer is a real link and is
+                    // left to the browser.
+                    .environment(\.openURL, OpenURLAction { url in
+                        guard let quote = SourceLink.quote(from: url) else { return .systemAction }
+                        revealQuote(quote)
+                        return .handled
+                    })
             }
 
-            if !card.citations.isEmpty {
-                HStack(spacing: 6) {
-                    ForEach(card.citations) { citation in
-                        Button("p. \(citation.page)") {
-                            viewer.scroll(toPage: citation.page)
-                        }
-                        .buttonStyle(.bordered)
-                        .controlSize(.mini)
-                        .help(citation.citedText)
-                    }
-                }
+            if !card.citations.isEmpty || !unquotedQuotes.isEmpty {
+                sourceChips
+            }
+
+            if let missNotice {
+                Label(missNotice, systemImage: "questionmark.text.page")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             ForEach(card.notices, id: \.self) { notice in
@@ -300,12 +364,13 @@ private struct QACardView: View {
                     .textSelection(.enabled)
             }
 
-            if let fraction = card.cachedFraction {
-                Text(usageSummary(fraction))
+            if let footer = usageSummary {
+                Text(footer)
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
-                    .help("Share of this question's input read from the cached document. "
-                          + "0% after the first question means the cached prefix is being mutated.")
+                    .help("Who answered, how much of this question's input was read from "
+                          + "the cached document, and what it cost. 0% cached after the first "
+                          + "question means the cached prefix is being mutated.")
             }
         }
         .padding(10)
@@ -313,11 +378,99 @@ private struct QACardView: View {
         .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
     }
 
-    private func usageSummary(_ fraction: Double) -> String {
-        var summary = "\(Int((fraction * 100).rounded()))% cached"
-        if let output = card.outputTokens {
-            summary += " · \(output) tokens out"
+    // MARK: Jump-to-source
+
+    /// One row of "show me where that came from" controls: the provider's own
+    /// page-anchored citations first, then any passage the answer quoted that no
+    /// citation already covers. Both end in the same place — the passage flashed on
+    /// the page — so they read as one row rather than two mechanisms.
+    private var sourceChips: some View {
+        FlowLayout {
+            ForEach(card.citations) { citation in
+                Button("p. \(citation.page)") { revealCitation(citation) }
+                    .buttonStyle(.bordered)
+                    .controlSize(.mini)
+                    .help(citation.citedText)
+            }
+            ForEach(unquotedQuotes, id: \.self) { quote in
+                Button {
+                    revealQuote(quote)
+                } label: {
+                    Label(AnswerQuotes.chipLabel(for: quote), systemImage: "text.magnifyingglass")
+                        .lineLimit(1)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.mini)
+                .help("Find this passage in the document")
+            }
         }
-        return summary
+    }
+
+    /// Passages the answer quoted, minus the ones a citation chip already points at,
+    /// deduplicated and capped — an answer that quotes ten times needs an index, not
+    /// a wall of chips.
+    private var unquotedQuotes: [String] {
+        var seen = Set<String>()
+        let cited = card.citations.map { $0.citedText.lowercased() }
+        return AnswerQuotes.quotes(in: card.answer)
+            .filter { quote in
+                let key = quote.lowercased()
+                guard !cited.contains(where: { $0.contains(key) }) else { return false }
+                return seen.insert(key).inserted
+            }
+            .prefix(6)
+            .map { $0 }
+    }
+
+    /// A citation names its page, so a wording that doesn't match still has somewhere
+    /// useful to go — extracted text and the model's rendering of it differ often
+    /// enough (ligatures, hyphenation, a trimmed ellipsis) that the page is the floor,
+    /// not the failure.
+    private func revealCitation(_ citation: Citation) {
+        if viewer.reveal(quote: citation.citedText, nearPage: citation.page) {
+            note(nil)
+        } else {
+            viewer.scroll(toPage: citation.page)
+            note("Couldn't match that wording — jumped to page \(citation.page).")
+        }
+    }
+
+    private func revealQuote(_ quote: String) {
+        if viewer.reveal(quote: quote, nearPage: card.question.pageHint) {
+            note(nil)
+        } else {
+            // No page to fall back to, and guessing one would be worse than saying so:
+            // a quote that isn't in the document is a fact about the answer.
+            note("Couldn't find that passage in the document.")
+        }
+    }
+
+    private func note(_ text: String?) {
+        missNotice = text
+        guard text != nil else { return }
+        Task {
+            try? await Task.sleep(for: .seconds(5))
+            if missNotice == text { missNotice = nil }
+        }
+    }
+
+    /// One tertiary line under each answer: provenance, cache share, cost. Every
+    /// part is optional — the subscription path has no per-token bill to show,
+    /// and a failed question has no usage at all.
+    private var usageSummary: String? {
+        var parts: [String] = []
+        if !card.providerName.isEmpty {
+            parts.append([card.providerName, card.modelName].compactMap { $0 }.joined(separator: " · "))
+        }
+        if let fraction = card.cachedFraction {
+            parts.append("\(Int((fraction * 100).rounded()))% cached")
+        }
+        if let output = card.outputTokens {
+            parts.append("\(output) tokens out")
+        }
+        if let cost = card.costUSD {
+            parts.append(TokenPricing.format(cost))
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 }

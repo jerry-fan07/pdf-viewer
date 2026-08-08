@@ -24,6 +24,14 @@ enum DeepSeekModel: String, CaseIterable, Identifiable, Sendable {
         case .v4Pro: return (0.003625, 0.435, 0.87)
         }
     }
+
+    /// The same rates in the shape the per-answer cost line wants. DeepSeek
+    /// caches automatically and bills no write premium, so `cacheWrite` is zero —
+    /// and the provider never reports cache-write tokens anyway.
+    var tokenPricing: TokenPricing {
+        TokenPricing(input: pricing.cacheMiss, cacheRead: pricing.cacheHit,
+                     cacheWrite: 0, output: pricing.output)
+    }
 }
 
 /// Thinking on the V4 models is **enabled by default at `high` effort**, which is
@@ -119,6 +127,11 @@ enum DeepSeekRequestBuilder {
 
         Answer from the document. If the document does not contain the answer, say \
         so plainly instead of guessing.
+
+        When a specific passage carries your answer, quote it in double quotes, copied \
+        from the document exactly — same words, same order, no tidying up — and keep it \
+        under about 25 words. The viewer looks each quotation up on the page and \
+        highlights it, so a paraphrase inside quotation marks points the reader at nothing.
 
         When the question carries a quoted selection, treat that as its subject; the \
         page the reader is on is context, not a constraint.

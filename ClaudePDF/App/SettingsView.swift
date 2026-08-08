@@ -9,6 +9,7 @@ struct SettingsView: View {
     @AppStorage(AppSettings.claudeCodeEffortKey) private var claudeCodeEffort = ClaudeCodeEffort.cliDefault.rawValue
     @AppStorage(AppSettings.deepseekModelKey) private var deepseekModel = DeepSeekModel.v4Flash.rawValue
     @AppStorage(AppSettings.deepseekThinkingKey) private var deepseekThinking = DeepSeekThinking.low.rawValue
+    @AppStorage(AppSettings.ocrEnabledKey) private var ocrEnabled = true
 
     private var cliInstalled: Bool { ClaudeCodeCLI.isInstalled }
 
@@ -51,8 +52,10 @@ struct SettingsView: View {
                         Text(choice.displayName).tag(choice.rawValue)
                     }
                 }
-                Text("Applies to documents opened after the change — a document keeps the "
-                     + "provider it was attached with.")
+                Text("Applies immediately, to open documents as well as new ones — a window "
+                     + "re-prepares itself for the new provider, which costs one fresh cache "
+                     + "write on its next question. A window switched by hand from the chat "
+                     + "panel's picker keeps what it was given.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -105,8 +108,18 @@ struct SettingsView: View {
                         Text(level.displayName).tag(level.rawValue)
                     }
                 }
-                Text("Text-only provider: it reads the PDF's extracted text, so scanned "
-                     + "documents and region screenshots need Claude. \(deepseekPriceLine)")
+                Text("Text-only provider: it reads the PDF's extracted text, so region "
+                     + "screenshots are sent as the text underneath them. \(deepseekPriceLine)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("Scanned pages") {
+                Toggle("Read scanned pages with OCR", isOn: $ocrEnabled)
+                Text("Pages with no text layer are recognised on-device with Apple's Vision "
+                     + "framework, so scanned documents work on the text-only path. Recognition "
+                     + "runs once per document and is cached; expect transcription errors. "
+                     + "Claude reads scanned pages natively and ignores this setting.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

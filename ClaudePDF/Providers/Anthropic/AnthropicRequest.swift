@@ -25,6 +25,18 @@ enum AnthropicModel: String, CaseIterable, Identifiable, Sendable {
         case .opus5, .sonnet5: return 600
         }
     }
+
+    /// Base input/output rates, USD per million tokens. Cache read (0.1×) and
+    /// the 1-hour cache write (2×) are derived in `TokenPricing.anthropic`.
+    /// Sonnet 5 carries an introductory $2/$10 through 2026-08-31; the standard
+    /// rate is used here so the figure doesn't quietly become wrong in September.
+    var pricing: TokenPricing {
+        switch self {
+        case .opus5: return .anthropic(input: 5, output: 25)
+        case .sonnet5: return .anthropic(input: 3, output: 15)
+        case .haiku45: return .anthropic(input: 1, output: 5)
+        }
+    }
 }
 
 // MARK: - Content blocks
@@ -143,6 +155,11 @@ enum AnthropicRequestBuilder {
         Answer from the document. If the document does not contain the answer, say \
         so plainly instead of guessing. Cite the passages you rely on so the reader \
         can jump straight to them.
+
+        When a specific passage carries your answer, quote it in double quotes, copied \
+        from the document exactly — same words, same order, no tidying up — and keep it \
+        under about 25 words. The viewer looks each quotation up on the page and \
+        highlights it, so a paraphrase inside quotation marks points the reader at nothing.
 
         When the question carries a quoted selection or a cropped region, treat that \
         as its subject; the page the reader is on is context, not a constraint.

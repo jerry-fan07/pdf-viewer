@@ -23,6 +23,9 @@ struct DeepSeekProvider: ChatProvider {
     let model: DeepSeekModel
     var thinking: DeepSeekThinking = .low
 
+    var modelName: String? { model.displayName }
+    var pricing: TokenPricing? { model.tokenPricing }
+
     // MARK: Transport
 
     private static let endpoint = URL(string: "https://api.deepseek.com/chat/completions")!
@@ -39,10 +42,18 @@ struct DeepSeekProvider: ChatProvider {
     // MARK: Attach
 
     func attach(document: PDFDocumentInfo) async throws -> DocumentAttachment {
+        try await attach(document: document, progress: { _ in })
+    }
+
+    func attach(document: PDFDocumentInfo, progress: @escaping @Sendable (String) -> Void)
+        async throws -> DocumentAttachment
+    {
         _ = try Self.apiKey()   // fail before doing the extraction work
 
         let key = Self.storeKey(for: document.fileURL)
-        let extracted = try DeepSeekExtractor.extract(from: document.fileURL)
+        let extracted = try DeepSeekExtractor.extract(from: document.fileURL) { done, total in
+            progress("Reading scanned page \(done) of \(total)…")
+        }
         DeepSeekTextStore.shared.store(extracted, for: key)
 
         return DocumentAttachment(providerID: id, handle: key,
@@ -80,6 +91,10 @@ struct DeepSeekProvider: ChatProvider {
         if question.regionImagePNG != nil,
            (question.regionFallbackText?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true) {
             yield(.notice("\(displayName) can't see images — switch to Claude for visual questions."))
+        }
+        if document.ocrPages > 0 {
+            yield(.notice("\(document.ocrPages) page\(document.ocrPages == 1 ? "" : "s") had no "
+                          + "text layer and were read by OCR — expect transcription errors."))
         }
         if document.wasTruncated {
             yield(.notice("Only pages 1–\(document.includedPages) of \(document.pageCount) fit "
@@ -139,19 +154,8 @@ struct DeepSeekProvider: ChatProvider {
     }
 
     /// Folds in size and modification date, so editing the file behind an open
-    /// window re-extracts instead of answering from stale text.
-    ///
-    /// Read through `FileManager` rather than `URL.resourceValues`: a `URL` caches
-    /// its resource values on first read, so an attachment holding one from open
-    /// time would keep reporting the size and date the file had back then — the
-    /// exact staleness this key exists to catch.
-    static func storeKey(for url: URL) -> String {
-        let path = url.standardizedFileURL.path
-        let attributes = try? FileManager.default.attributesOfItem(atPath: path)
-        let size = (attributes?[.size] as? NSNumber)?.intValue ?? -1
-        let modified = (attributes?[.modificationDate] as? Date)?.timeIntervalSince1970 ?? -1
-        return "\(path)|\(size)|\(Int(modified))"
-    }
+    /// window re-extracts instead of answering from stale text. See `DocumentKey`.
+    static func storeKey(for url: URL) -> String { DocumentKey.make(for: url) }
 
     private static func apiKey() throws -> String {
         guard let key = KeychainStore.get(.deepseekAPIKey)?

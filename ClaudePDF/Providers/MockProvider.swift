@@ -1,4 +1,5 @@
 import Foundation
+import PDFKit
 
 /// Streams a canned answer so the chat UI is demoable before any real provider lands.
 /// Wired as the default in DocumentWindow until Phase 3.
@@ -10,7 +11,11 @@ struct MockProvider: ChatProvider {
     )
 
     func attach(document: PDFDocumentInfo) async throws -> DocumentAttachment {
-        DocumentAttachment(providerID: id, handle: document.fileURL.lastPathComponent)
+        DocumentAttachment(
+            providerID: id,
+            handle: document.fileURL.lastPathComponent,
+            sourceURL: document.fileURL
+        )
     }
 
     func ask(_ question: Question, in attachment: DocumentAttachment)
@@ -31,6 +36,12 @@ struct MockProvider: ChatProvider {
                 }
                 preamble += "\nThis is a placeholder answer streamed word by word. "
                 preamble += "Configure a real provider in Settings once Phase 3+ lands.\n\n"
+                if let passage = Self.realPassage(
+                    from: attachment.sourceURL, page: question.pageHint ?? 1
+                ) {
+                    preamble += "The document itself says \"\(passage)\", "
+                    preamble += "and \"this sentence is a paraphrase that is not in the document\".\n\n"
+                }
                 preamble += Self.latexSample
                 for word in preamble.split(separator: " ", omittingEmptySubsequences: false) {
                     try Task.checkCancellation()
@@ -44,6 +55,27 @@ struct MockProvider: ChatProvider {
             }
             continuation.onTermination = { _ in task.cancel() }
         }
+    }
+
+    /// A run of words genuinely on the page the reader is looking at, so the offline
+    /// answer exercises answer-to-source highlighting the same way `latexSample`
+    /// exercises the typesetter — one quotation that must be found and flashed, and
+    /// one that must come back "not in the document".
+    ///
+    /// Words are taken from the middle of a line rather than its start, so the match
+    /// has to survive the line breaks around it rather than getting them for free.
+    private static func realPassage(from url: URL?, page: Int) -> String? {
+        guard let url, let document = PDFDocument(url: url),
+              let text = document.page(at: min(max(page, 1), document.pageCount) - 1)?.string
+        else { return nil }
+        let words = text
+            .split(whereSeparator: { $0.isWhitespace })
+            .map(String.init)
+            .filter { $0.count > 1 }
+        guard words.count >= 14 else { return nil }
+        // A stray `"` on the page would close the demo quote early, in the one place
+        // whose whole job is to be a well-formed quotation.
+        return words[4..<12].joined(separator: " ").replacingOccurrences(of: "\"", with: "")
     }
 
     /// Every LaTeX shape the answer renderer has to survive: both inline delimiters, both

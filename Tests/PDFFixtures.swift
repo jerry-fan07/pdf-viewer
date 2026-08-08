@@ -61,6 +61,133 @@ enum PDFFixtures {
         makeDocument(origin: origin, rotation: rotation).page(at: 0)!
     }
 
+    /// A text-only document, one array of lines per page, drawn as real text so
+    /// `PDFPage.string` and `PDFPage.selection(for:)` have something to work with.
+    /// Line breaks are where the caller puts them — which is the point, since
+    /// re-wrapping is exactly what makes a model's quote fail to match the page.
+    static func makeTextDocument(pages: [[String]], pointSize: CGFloat = 12) -> PDFDocument {
+        let size = CGSize(width: 400, height: 300)
+        let data = NSMutableData()
+        let consumer = CGDataConsumer(data: data)!
+        var mediaBox = CGRect(origin: .zero, size: size)
+        let context = CGContext(consumer: consumer, mediaBox: &mediaBox, nil)!
+        let font = CTFontCreateWithName("Helvetica" as CFString, pointSize, nil)
+
+        for lines in pages {
+            context.beginPDFPage(nil)
+            context.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
+            context.fill(CGRect(origin: .zero, size: size))
+            var y = size.height - pointSize * 2
+            for line in lines {
+                let attributed = NSAttributedString(string: line, attributes: [.font: font])
+                context.textPosition = CGPoint(x: 30, y: y)
+                CTLineDraw(CTLineCreateWithAttributedString(attributed), context)
+                y -= pointSize * 1.6
+            }
+            context.endPDFPage()
+        }
+        context.closePDF()
+
+        let document = PDFDocument(data: data as Data)!
+        retained.append(document)
+        return document
+    }
+
+    /// A two-page paper, pre-wrapped at realistic line breaks, for anything that needs a
+    /// document that reads like one: the line breaks are the point, since a quotation of
+    /// a wrapped sentence is exactly what answer-to-source matching has to survive.
+    static func makePaperDocument() -> PDFDocument {
+        makeTextDocument(pages: paperPages, pointSize: 11)
+    }
+
+    static let paperPages: [[String]] = [
+        [
+            "Prefix Caching for Document-Grounded Question Answering",
+            "",
+            "Abstract. We study the economics of answering repeated questions",
+            "about a single long document. Prompt caching is a prefix match, so",
+            "the document must occupy a byte-identical prefix on every request.",
+            "",
+            "1. Introduction",
+            "",
+            "The failure mode is silent. If any byte of the prefix moves between",
+            "questions, the cache misses and the document is re-processed at full",
+            "price. Nothing in the response says so except the usage counters.",
+        ],
+        [
+            "2. Grounding the answer",
+            "",
+            "An answer that quotes the document should be checkable in one click.",
+            "We locate each quotation on the page and highlight it, which converts",
+            "an assertion into evidence the reader can see for themselves.",
+            "",
+            "We deliberately refuse approximate matches. A fuzzy match that",
+            "highlighted a merely similar sentence would invert the purpose of the",
+            "feature, since the highlight is the evidence.",
+        ],
+    ]
+
+    /// A "scanned" document: each page's text is rasterised into a bitmap and the
+    /// bitmap is stamped onto the page, so the PDF carries **no text layer** at
+    /// all — `page.string` is nil, exactly as for a real scan. This is what the
+    /// OCR path exists for.
+    ///
+    /// `words` gives one page per entry. Drawn large, black on white, in
+    /// Helvetica: the point is to exercise the pipeline, not Vision's tolerance
+    /// for bad scans.
+    static func makeScannedDocument(words: [String], pageSize: CGSize = CGSize(width: 612, height: 792)) -> PDFDocument {
+        let data = NSMutableData()
+        let consumer = CGDataConsumer(data: data)!
+        var mediaBox = CGRect(origin: .zero, size: pageSize)
+        let context = CGContext(consumer: consumer, mediaBox: &mediaBox, nil)!
+
+        for word in words {
+            context.beginPDFPage(nil)
+            context.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
+            context.fill(mediaBox)
+            if let bitmap = rasterise(word, size: pageSize) {
+                context.draw(bitmap, in: mediaBox)
+            }
+            context.endPDFPage()
+        }
+        context.closePDF()
+
+        let document = PDFDocument(data: data as Data)!
+        retained.append(document)
+        return document
+    }
+
+    /// Text → pixels. Rendered at 2× and drawn back down, so the glyph edges the
+    /// recogniser sees are the ones a real scan would have.
+    private static func rasterise(_ text: String, size: CGSize) -> CGImage? {
+        let scale: CGFloat = 2
+        let width = Int(size.width * scale), height = Int(size.height * scale)
+        guard let context = CGContext(
+            data: nil, width: width, height: height,
+            bitsPerComponent: 8, bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue
+        ) else { return nil }
+
+        context.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        context.setFillColor(CGColor(red: 0, green: 0, blue: 0, alpha: 1))
+
+        let font = CTFontCreateWithName("Helvetica" as CFString, 96 * scale, nil)
+        let attributed = NSAttributedString(string: text, attributes: [
+            .font: font,
+            .foregroundColor: CGColor(red: 0, green: 0, blue: 0, alpha: 1),
+        ])
+        let line = CTLineCreateWithAttributedString(attributed)
+        let bounds = CTLineGetBoundsWithOptions(line, [])
+        context.textPosition = CGPoint(
+            x: (CGFloat(width) - bounds.width) / 2,
+            y: (CGFloat(height) - bounds.height) / 2
+        )
+        CTLineDraw(line, context)
+        return context.makeImage()
+    }
+
     /// Marker rect translated into absolute (unrotated) page space for a given box origin —
     /// the space `PDFView.convert(_:to: page)` speaks.
     static func inPageSpace(_ marker: CGRect, origin: CGPoint) -> CGRect {

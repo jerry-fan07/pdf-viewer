@@ -46,6 +46,15 @@ struct DocumentWindow: View {
     @State private var pageField = "1"
     @FocusState private var searchFocused: Bool
 
+    // Watched so a change in Settings reaches documents that are already open.
+    @AppStorage(AppSettings.providerChoiceKey) private var providerChoice = ProviderChoice.automatic.rawValue
+    @AppStorage(AppSettings.anthropicModelKey) private var anthropicModel = AnthropicModel.opus5.rawValue
+    @AppStorage(AppSettings.claudeCodeEffortKey) private var claudeCodeEffort = ClaudeCodeEffort.cliDefault.rawValue
+    @AppStorage(AppSettings.deepseekModelKey) private var deepseekModel = DeepSeekModel.v4Flash.rawValue
+    @AppStorage(AppSettings.deepseekThinkingKey) private var deepseekThinking = DeepSeekThinking.low.rawValue
+
+    // Same story for the page appearance, but it is resolved against the window's own
+    // colour scheme rather than pushed at the engine.
     @AppStorage(AppSettings.pdfAppearanceKey)
     private var pdfAppearance = PDFAppearanceMode.matchSystem.rawValue
     @Environment(\.colorScheme) private var colorScheme
@@ -91,6 +100,9 @@ struct DocumentWindow: View {
         .onChange(of: viewer.currentPageNumber) { _, page in
             pageField = String(page)
         }
+        .onChange(of: providerSettings) { _, _ in
+            applyProviderSettings()
+        }
     }
 
     // MARK: Toolbar
@@ -103,7 +115,8 @@ struct DocumentWindow: View {
             } label: {
                 Label("Thumbnails", systemImage: "sidebar.left")
             }
-            .help("Show or hide page thumbnails")
+            .keyboardShortcut("s", modifiers: [.command, .control])
+            .help("Show or hide page thumbnails (⌃⌘S)")
         }
 
         ToolbarItemGroup {
@@ -149,10 +162,12 @@ struct DocumentWindow: View {
 
             Button {
                 chatVisible.toggle()
+                if chatVisible { engine.requestComposerFocus() }
             } label: {
                 Label("Ask", systemImage: "bubble.left.and.text.bubble.right")
             }
-            .help("Show or hide the chat panel")
+            .keyboardShortcut("i", modifiers: [.command, .option])
+            .help("Show or hide the chat panel (⌥⌘I)")
         }
     }
 
@@ -256,27 +271,27 @@ struct DocumentWindow: View {
               let crop = CropExtractor.makeCrop(viewRect: rect, overlay: overlay, pdfView: pdfView)
         else { return }
 
-        // Capability-based degradation (PLAN.md §4): a text-only provider still
-        // gets the region's text when there is one, but a figure with no text
-        // layer under it is a dead end worth saying out loud rather than
-        // silently sending a question about an invisible image.
-        if !engine.capabilities.supportsVision {
-            if crop.fallbackText == nil {
-                engine.composerNotice =
-                    "\(engine.providerName) can't see images — switch to Claude for visual questions."
-                engine.pendingCrop = nil
-                chatVisible = true
-                return
-            }
-            engine.composerNotice =
-                "\(engine.providerName) can't see images — it will read the text inside this region."
-        } else {
-            engine.composerNotice = nil
-        }
-
-        engine.pendingCrop = crop
         chatVisible = true
-        engine.requestComposerFocus()
+        // The capability-based degradation of PLAN.md §4 lives in the engine, which
+        // has to re-run it whenever the provider changes under a staged crop.
+        engine.stage(crop: crop, focusComposer: true)
+    }
+
+    // MARK: Settings, applied live
+
+    /// Everything in Settings that changes which provider — or which model —
+    /// answers. Collapsed into one value because `onChange` wants one.
+    private var providerSettings: String {
+        [providerChoice, anthropicModel, claudeCodeEffort, deepseekModel, deepseekThinking]
+            .joined(separator: "|")
+    }
+
+    private func applyProviderSettings() {
+        // A window whose provider was picked by hand keeps it: the Settings picker
+        // is the default for newly opened documents, not a remote control for
+        // windows the reader has already steered.
+        guard !engine.providerIsWindowOverride else { return }
+        engine.switchProvider(to: ProviderFactory.make())
     }
 
     // MARK: Loading
