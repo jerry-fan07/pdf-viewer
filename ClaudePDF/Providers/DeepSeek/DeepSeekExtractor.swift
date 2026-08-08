@@ -52,7 +52,7 @@ enum DeepSeekExtractor {
 
         var ocrPages = 0
         if ocr {
-            ocrPages = fillGapsWithOCR(
+            ocrPages = try fillGapsWithOCR(
                 &pageTexts, document: document, url: url, cache: cache, progress: progress
             )
         }
@@ -81,7 +81,7 @@ enum DeepSeekExtractor {
         url: URL,
         cache: OCRCache,
         progress: (@Sendable (Int, Int) -> Void)?
-    ) -> Int {
+    ) throws -> Int {
         let gaps = pageTexts.indices.filter {
             (pageTexts[$0]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "").isEmpty
         }
@@ -91,8 +91,14 @@ enum DeepSeekExtractor {
         var recognised = 0
         var done = 0
         var cacheChanged = false
+        // Whatever was recognised before a cancellation is still worth keeping —
+        // the next attempt resumes instead of starting the scan over.
+        defer { if cacheChanged { cache.save(cached, for: url) } }
 
         for index in gaps {
+            // A 600-page scan is minutes of work; a cancelled attach must be
+            // able to stop it rather than run to completion in the background.
+            try Task.checkCancellation()
             defer {
                 done += 1
                 progress?(done, gaps.count)
@@ -117,7 +123,6 @@ enum DeepSeekExtractor {
             }
         }
 
-        if cacheChanged { cache.save(cached, for: url) }
         return recognised
     }
 
