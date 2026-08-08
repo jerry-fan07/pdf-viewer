@@ -22,7 +22,7 @@ Tests live in `Tests` and run against the app as their test host — no GUI auto
 
 ## Status
 
-All six phases are done: the viewer, selection/crop, all three providers (Anthropic API, Claude subscription via the Claude Code CLI, DeepSeek), and the polish pass — per-document history, per-answer cost, OCR for scanned pages, and an app icon — with **184 unit tests**. The subscription path has been verified live; the two API paths are code-complete with their live cache-hit criteria still unverified (both need an API key).
+All seven phases are done: the viewer, selection/crop, all three providers (Anthropic API, Claude subscription via the Claude Code CLI, DeepSeek), the polish pass — per-document history, per-answer cost, OCR for scanned pages, and an app icon — and live provider switching, with **207 unit tests**. The subscription path has been verified live; the two API paths are code-complete with their live cache-hit criteria still unverified (both need an API key).
 
 Two things are deliberately not finished, both blocked on credentials rather than code: **notarization** (the Developer ID build is signed, hardened and verified — `Scripts/release.sh --notarize` submits and staples once `xcrun notarytool store-credentials` has run) and the **cache pre-warm knob**, which PLAN §7 asks to be verified against `claude-opus-5` before shipping. See the phase list in [PLAN.md](PLAN.md).
 
@@ -34,6 +34,8 @@ Chat answers render block-level Markdown **and LaTeX** — headings, nested list
 - **Region** — ⌘⇧A, then drag a rectangle around a figure, table, or equation. Esc or a click cancels. The crop is exported as a 2× PNG (long edge capped at 1600 px) and any text underneath it is captured too, so text-only providers still get something to read; when there is no text layer under the region, it is recognised with OCR rather than refused.
 
 Each answer carries the provider and model that produced it, how much of its input was read from the cached document, and what it cost. Questions and answers are saved per document and restored when you reopen it — history is display-only and is never sent back to the model. The trash button in the panel header clears it.
+
+**Switching provider** — the provider capsule at the top of the chat panel is a menu: pick another one and the open document re-prepares itself for it, no reopening. The transcript stays, and each card goes on naming whoever answered it, so a switch reads as a change of voice rather than a reset. Switching costs one fresh cache write on the next question; switching *back* to a provider this document is already prepared for is free. A change in Settings applies to open windows too — except to a window you have switched by hand, which keeps what you gave it. A region crop staged for Claude is re-read as text (or recognised with OCR) if you switch to a text-only provider. Preparing a large scanned document can be cancelled from the status line, and retried.
 
 **Shortcuts:** ⌘F find (⌘G / ⇧⌘G next and previous, Esc clears) · ⌘L ask about the selection · ⇧⌘A region crop · ⌥⌘I chat panel · ⌃⌘S thumbnails · ⌘− / ⌘0 / ⌘= zoom.
 

@@ -37,14 +37,45 @@ struct ChatPanelView: View {
                 .disabled(engine.isStreaming)
                 .help("Clear this document's saved questions and answers")
             }
-            Text(engine.providerName)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 6)
-                .padding(.vertical, 2)
-                .background(.quaternary, in: Capsule())
+            providerMenu
         }
         .padding(10)
+    }
+
+    /// The provider capsule doubles as the switcher (Phase 7). Disabled while an
+    /// answer streams, for the same reason Clear is: swapping the voice halfway
+    /// through a sentence has no sensible reading.
+    private var providerMenu: some View {
+        Menu {
+            Section("Ask with") {
+                ForEach(ProviderChoice.switchable) { choice in
+                    Button {
+                        engine.switchProvider(to: ProviderFactory.make(choice),
+                                              isWindowOverride: true)
+                    } label: {
+                        if choice.providerID == engine.providerID {
+                            Label(choice.displayName, systemImage: "checkmark")
+                        } else {
+                            Text(choice.displayName)
+                        }
+                    }
+                    .disabled(choice.unavailableReason != nil)
+                    .help(choice.unavailableReason ?? "")
+                }
+            }
+            Divider()
+            // Never let a cache write happen silently (PLAN.md §7).
+            Text("Switching re-prepares this document for the new provider — the "
+                 + "first question after that pays a fresh cache write. Switching "
+                 + "back to one it is already prepared for is free.")
+        } label: {
+            Text(engine.providerName)
+                .font(.caption)
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .disabled(engine.isStreaming)
+        .help("Who answers questions about this document — switch without reopening it")
     }
 
     private var transcript: some View {
@@ -53,7 +84,7 @@ struct ChatPanelView: View {
                 LazyVStack(alignment: .leading, spacing: 12) {
                     if engine.providerID == "mock" {
                         Label(
-                            "No provider configured — answers are placeholders. Install Claude Code and run `claude` once to sign in, or add an Anthropic or DeepSeek API key in Settings (⌘,). Then reopen this document.",
+                            "No provider configured — answers are placeholders. Install Claude Code and run `claude` once to sign in, or add an Anthropic or DeepSeek API key in Settings (⌘,), then pick it from the menu above. This document doesn't need reopening.",
                             systemImage: "info.circle"
                         )
                         .font(.caption)
@@ -65,12 +96,23 @@ struct ChatPanelView: View {
                             Text(status)
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
+                            Button(action: engine.cancelAttach) {
+                                Image(systemName: "xmark.circle.fill").font(.caption)
+                            }
+                            .buttonStyle(.plain)
+                            .help("Stop preparing this document")
                         }
                     }
                     if let attachError = engine.attachError {
-                        Label(attachError, systemImage: "exclamationmark.triangle")
-                            .font(.callout)
-                            .foregroundStyle(.red)
+                        VStack(alignment: .leading, spacing: 4) {
+                            Label(attachError, systemImage: "exclamationmark.triangle")
+                                .font(.callout)
+                                .foregroundStyle(.red)
+                            if engine.canRetryAttach {
+                                Button("Try Again", action: engine.retryAttach)
+                                    .controlSize(.small)
+                            }
+                        }
                     }
                     ForEach(engine.cards) { card in
                         QACardView(card: card, viewer: viewer)
