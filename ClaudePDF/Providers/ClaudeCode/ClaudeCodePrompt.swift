@@ -53,12 +53,18 @@ enum ClaudeCodePrompt {
         parts.append("Question: \(question.text)")
 
         // No API-native citations on this path, so page numbers have to be asked
-        // for (PLAN.md capability matrix: best-effort, prompted). The LaTeX request is
-        // the same story: left alone, models answer papers in Unicode (φ, ≈, √) and the
-        // typesetter never sees anything to typeset.
+        // for (PLAN.md capability matrix: best-effort, prompted). The verbatim-quote and
+        // LaTeX requests are the same story: left alone, models paraphrase what they
+        // read — and answer papers in Unicode (φ, ≈, √), so the typesetter never sees
+        // anything to typeset. This prompt is volatile, so unlike the two API paths
+        // asking for all three costs nothing in cache.
         parts.append(
             "Answer from the PDF already in this conversation. Reference page numbers "
-            + "inline so the reader can find the passage. Lead with the answer and keep it short. "
+            + "inline so the reader can find the passage. When a specific passage carries "
+            + "your answer, quote it in double quotes, copied from the document exactly — "
+            + "same words, same order, no tidying up — and under about 25 words: the viewer "
+            + "looks each quotation up on the page and highlights it. "
+            + "Lead with the answer and keep it short. "
             + "Write mathematics as LaTeX so the viewer can typeset it: $…$ inline, $$…$$ for a "
             + "displayed equation — write $\\phi(H) \\neq 1$, not φ(H) ≠ 1."
         )

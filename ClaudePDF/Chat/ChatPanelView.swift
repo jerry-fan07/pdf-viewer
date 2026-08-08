@@ -286,9 +286,16 @@ private struct CropChipView: View {
 
 // MARK: - Cards
 
-private struct QACardView: View {
+/// Internal rather than private so the snapshot harness can render the real card
+/// (`Tests/UISnapshots.swift`) instead of a lookalike.
+struct QACardView: View {
     let card: QACard
     let viewer: PDFViewerController
+
+    /// Shown for a few seconds when a quote can't be found on the page — silence
+    /// after a click reads as a broken link, and "it isn't in the document" is
+    /// exactly the thing this feature exists to tell the reader.
+    @State private var missNotice: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -324,19 +331,24 @@ private struct QACardView: View {
             } else {
                 AnswerView(answer: card.answer)
                     .font(.body)
+                    // A quoted passage in the answer is a link back to the page it
+                    // came from; anything else in an answer is a real link and is
+                    // left to the browser.
+                    .environment(\.openURL, OpenURLAction { url in
+                        guard let quote = SourceLink.quote(from: url) else { return .systemAction }
+                        revealQuote(quote)
+                        return .handled
+                    })
             }
 
-            if !card.citations.isEmpty {
-                HStack(spacing: 6) {
-                    ForEach(card.citations) { citation in
-                        Button("p. \(citation.page)") {
-                            viewer.scroll(toPage: citation.page)
-                        }
-                        .buttonStyle(.bordered)
-                        .controlSize(.mini)
-                        .help(citation.citedText)
-                    }
-                }
+            if !card.citations.isEmpty || !unquotedQuotes.isEmpty {
+                sourceChips
+            }
+
+            if let missNotice {
+                Label(missNotice, systemImage: "questionmark.text.page")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             ForEach(card.notices, id: \.self) { notice in
@@ -364,6 +376,82 @@ private struct QACardView: View {
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    // MARK: Jump-to-source
+
+    /// One row of "show me where that came from" controls: the provider's own
+    /// page-anchored citations first, then any passage the answer quoted that no
+    /// citation already covers. Both end in the same place — the passage flashed on
+    /// the page — so they read as one row rather than two mechanisms.
+    private var sourceChips: some View {
+        FlowLayout {
+            ForEach(card.citations) { citation in
+                Button("p. \(citation.page)") { revealCitation(citation) }
+                    .buttonStyle(.bordered)
+                    .controlSize(.mini)
+                    .help(citation.citedText)
+            }
+            ForEach(unquotedQuotes, id: \.self) { quote in
+                Button {
+                    revealQuote(quote)
+                } label: {
+                    Label(AnswerQuotes.chipLabel(for: quote), systemImage: "text.magnifyingglass")
+                        .lineLimit(1)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.mini)
+                .help("Find this passage in the document")
+            }
+        }
+    }
+
+    /// Passages the answer quoted, minus the ones a citation chip already points at,
+    /// deduplicated and capped — an answer that quotes ten times needs an index, not
+    /// a wall of chips.
+    private var unquotedQuotes: [String] {
+        var seen = Set<String>()
+        let cited = card.citations.map { $0.citedText.lowercased() }
+        return AnswerQuotes.quotes(in: card.answer)
+            .filter { quote in
+                let key = quote.lowercased()
+                guard !cited.contains(where: { $0.contains(key) }) else { return false }
+                return seen.insert(key).inserted
+            }
+            .prefix(6)
+            .map { $0 }
+    }
+
+    /// A citation names its page, so a wording that doesn't match still has somewhere
+    /// useful to go — extracted text and the model's rendering of it differ often
+    /// enough (ligatures, hyphenation, a trimmed ellipsis) that the page is the floor,
+    /// not the failure.
+    private func revealCitation(_ citation: Citation) {
+        if viewer.reveal(quote: citation.citedText, nearPage: citation.page) {
+            note(nil)
+        } else {
+            viewer.scroll(toPage: citation.page)
+            note("Couldn't match that wording — jumped to page \(citation.page).")
+        }
+    }
+
+    private func revealQuote(_ quote: String) {
+        if viewer.reveal(quote: quote, nearPage: card.question.pageHint) {
+            note(nil)
+        } else {
+            // No page to fall back to, and guessing one would be worse than saying so:
+            // a quote that isn't in the document is a fact about the answer.
+            note("Couldn't find that passage in the document.")
+        }
+    }
+
+    private func note(_ text: String?) {
+        missNotice = text
+        guard text != nil else { return }
+        Task {
+            try? await Task.sleep(for: .seconds(5))
+            if missNotice == text { missNotice = nil }
+        }
     }
 
     /// One tertiary line under each answer: provenance, cache share, cost. Every

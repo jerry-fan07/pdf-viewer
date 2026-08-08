@@ -21,6 +21,10 @@ final class PDFViewerController: ObservableObject {
     private var searchTask: Task<Void, Never>?
     private var restoreDefaultsKey: String?
 
+    /// Normalised page text for answer-to-source lookups, rebuilt when the document changes.
+    private var textIndex = PDFTextIndex()
+    private var flashTask: Task<Void, Never>?
+
     // MARK: Lifecycle
 
     /// Must be called before the PDFView attaches so restore has its key.
@@ -31,6 +35,7 @@ final class PDFViewerController: ObservableObject {
     func attach(view: PDFView) {
         pdfView = view
         pageCount = view.document?.pageCount ?? 0
+        textIndex = PDFTextIndex()   // a new document invalidates every cached page
         if let observer = pageObserver { NotificationCenter.default.removeObserver(observer) }
         pageObserver = NotificationCenter.default.addObserver(
             forName: .PDFViewPageChanged, object: view, queue: .main
@@ -83,6 +88,60 @@ final class PDFViewerController: ObservableObject {
         view.autoScales = true
     }
 
+    // MARK: Answer-to-source highlighting
+
+    /// Find a passage an answer quoted and flash it on the page. Returns false when
+    /// the quote isn't in the document — the caller says so rather than scrolling the
+    /// reader somewhere arbitrary, since "it isn't there" is itself the useful answer.
+    @discardableResult
+    func reveal(quote: String, nearPage: Int? = nil) -> Bool {
+        guard let view = pdfView, let document = view.document else { return false }
+        guard let match = SourceLocator.locate(
+            quote, in: document, index: textIndex, nearPage: nearPage
+        ) else { return false }
+        flash(match.selection)
+        return true
+    }
+
+    /// Three pulses of accent colour, then the search highlights back exactly as they
+    /// were. Blinking rather than a static highlight: the eye finds a change in a wall
+    /// of text far faster than a colour.
+    private func flash(_ selection: PDFSelection) {
+        guard let view = pdfView else { return }
+        flashTask?.cancel()
+        selection.color = .controlAccentColor.withAlphaComponent(0.55)
+        view.go(to: selection)
+        // Deliberately not `setCurrentSelection`: the composer picks up the live
+        // selection at submit, so flashing a passage would silently attach it to the
+        // reader's next question.
+        // The first pulse is applied here rather than inside the task: a highlight that
+        // waits for the next main-loop hop is a highlight the reader can miss on the
+        // same frame the view scrolls.
+        show(flash: selection)
+        flashTask = Task { [weak self] in
+            // "after this long, switch to that state" — ending dark, ~2s in total.
+            let beats: [(after: Double, on: Bool)] = [
+                (0.45, false), (0.12, true), (0.45, false), (0.12, true), (0.9, false),
+            ]
+            for beat in beats {
+                try? await Task.sleep(for: .seconds(beat.after))
+                // A cancelled flash leaves the highlights alone: whoever cancelled it
+                // (a new flash, a search) has already set them.
+                guard !Task.isCancelled else { return }
+                self?.show(flash: beat.on ? selection : nil)
+            }
+        }
+    }
+
+    /// The flash shares `highlightedSelections` with ⌘F, so it composes with the
+    /// matches rather than replacing them — a flash during an active search must not
+    /// wipe the yellow.
+    private func show(flash selection: PDFSelection?) {
+        guard let view = pdfView else { return }
+        let combined = matches + (selection.map { [$0] } ?? [])
+        view.highlightedSelections = combined.isEmpty ? nil : combined
+    }
+
     // MARK: Selection (for chat)
 
     /// Current text selection plus its 1-indexed page, if any.
@@ -118,6 +177,7 @@ final class PDFViewerController: ObservableObject {
     // notification-based) if very large documents make typing hitch.
     private func performSearch(_ query: String) {
         guard let view = pdfView, let document = view.document else { return }
+        flashTask?.cancel()   // the search owns the highlights from here
         let found = Array(document.findString(query, withOptions: [.caseInsensitive]).prefix(500))
         for selection in found { selection.color = .systemYellow }
         matches = found
@@ -145,6 +205,7 @@ final class PDFViewerController: ObservableObject {
     }
 
     private func clearMatches() {
+        flashTask?.cancel()
         matches = []
         currentMatchIndex = 0
         pdfView?.highlightedSelections = nil
