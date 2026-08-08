@@ -22,11 +22,23 @@ Tests live in `Tests` and run against the app as their test host — no GUI auto
 
 ## Status
 
-Phases 0–5 are done: the viewer, selection/crop, and all three providers (Anthropic API, Claude subscription via the Claude Code CLI, DeepSeek) are implemented, with 153 unit tests. The subscription path has been verified live; the two API paths are code-complete with their live cache-hit criteria still unverified. Phase 6 (history, OCR, notarized build) is next — see the phase list in [PLAN.md](PLAN.md).
+All six phases are done: the viewer, selection/crop, all three providers (Anthropic API, Claude subscription via the Claude Code CLI, DeepSeek), and the polish pass — per-document history, per-answer cost, OCR for scanned pages, and an app icon — with **184 unit tests**. The subscription path has been verified live; the two API paths are code-complete with their live cache-hit criteria still unverified (both need an API key).
+
+Two things are deliberately not finished, both blocked on credentials rather than code: **notarization** (the Developer ID build is signed, hardened and verified — `Scripts/release.sh --notarize` submits and staples once `xcrun notarytool store-credentials` has run) and the **cache pre-warm knob**, which PLAN §7 asks to be verified against `claude-opus-5` before shipping. See the phase list in [PLAN.md](PLAN.md).
 
 Chat answers render block-level Markdown **and LaTeX** — headings, nested lists, tables, blockquotes, and syntax-highlighted code fences, with inline math flowing within the sentence and display math on its own block ([screenshot](docs/latex-rendering.png)). The design notes, including why blocks must be cut before math and math before Markdown, are in [PLAN.md §6](PLAN.md).
 
 ## Asking about the document
 
 - **Text** — select text in the PDF, then ⌘L (or the toolbar's *Ask about Selection*). The snippet appears above the chat input and is attached to your next question.
-- **Region** — ⌘⇧A, then drag a rectangle around a figure, table, or equation. Esc or a click cancels. The crop is exported as a 2× PNG (long edge capped at 1600 px) and any text underneath it is captured too, so text-only providers still get something to read.
+- **Region** — ⌘⇧A, then drag a rectangle around a figure, table, or equation. Esc or a click cancels. The crop is exported as a 2× PNG (long edge capped at 1600 px) and any text underneath it is captured too, so text-only providers still get something to read; when there is no text layer under the region, it is recognised with OCR rather than refused.
+
+Each answer carries the provider and model that produced it, how much of its input was read from the cached document, and what it cost. Questions and answers are saved per document and restored when you reopen it — history is display-only and is never sent back to the model. The trash button in the panel header clears it.
+
+**Shortcuts:** ⌘F find (⌘G / ⇧⌘G next and previous, Esc clears) · ⌘L ask about the selection · ⇧⌘A region crop · ⌥⌘I chat panel · ⌃⌘S thumbnails · ⌘− / ⌘0 / ⌘= zoom.
+
+## Releasing
+
+`Scripts/release.sh` builds a Release configuration signed with a Developer ID certificate and the hardened runtime, then verifies the signature. `Scripts/release.sh --notarize` additionally submits the app to Apple and staples the ticket — that step needs App Store Connect credentials stored once with `xcrun notarytool store-credentials`. Distribution is outside the Mac App Store by necessity: the subscription provider spawns the user's `claude` CLI, which the App Sandbox does not permit.
+
+The app icon is generated rather than checked in as opaque artwork — `swift Scripts/make-app-icon.swift ClaudePDF/Assets.xcassets/AppIcon.appiconset` redraws every size.

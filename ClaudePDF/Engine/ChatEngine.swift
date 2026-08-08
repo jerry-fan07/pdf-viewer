@@ -14,8 +14,16 @@ struct PendingSelection: Equatable {
 }
 
 struct QACard: Identifiable {
-    let id = UUID()
+    var id = UUID()
+    var askedAt = Date()
     let question: Question
+    /// Who answered. Recorded per card because a restored transcript can predate
+    /// a provider or model change — the panel header only names the current one.
+    var providerName: String = ""
+    var modelName: String?
+    /// Rates in force when the question was asked. Not persisted: `costUSD` is
+    /// computed while the card is live so a later model change can't reprice it.
+    var pricing: TokenPricing?
     var answer: String = ""
     var citations: [Citation] = []
     var notices: [String] = []
@@ -23,6 +31,7 @@ struct QACard: Identifiable {
     var cacheReadTokens: Int?
     var cacheWriteTokens: Int?
     var outputTokens: Int?
+    var costUSD: Double?
     var error: String?
     var isStreaming = true
 
@@ -57,24 +66,34 @@ final class ChatEngine: ObservableObject {
     func requestComposerFocus() { composerFocusRequest += 1 }
 
     private let provider: ChatProvider
+    private let history: HistoryStore
+    private var documentURL: URL?
     private var attachTask: Task<DocumentAttachment, Error>?
     private var askTask: Task<Void, Never>?
 
-    init(provider: ChatProvider) {
+    init(provider: ChatProvider, history: HistoryStore = .shared) {
         self.provider = provider
+        self.history = history
     }
 
     var providerName: String { provider.displayName }
     var providerID: String { provider.id }
     var capabilities: ProviderCapabilities { provider.capabilities }
+    var hasHistory: Bool { !cards.isEmpty }
 
-    /// Kick off document attachment (upload / extraction / session priming) at open.
+    /// Kick off document attachment (upload / extraction / session priming) at open,
+    /// and restore whatever transcript this document already has.
     func attach(_ info: PDFDocumentInfo) {
+        documentURL = info.fileURL
+        restoreHistory(for: info.fileURL)
+
         let provider = self.provider
         attachStatus = "Preparing this document for \(provider.displayName)…"
         attachTask = Task {
             do {
-                let attachment = try await provider.attach(document: info)
+                let attachment = try await provider.attach(document: info) { status in
+                    Task { @MainActor in self.attachStatus = status }
+                }
                 await MainActor.run { self.attachStatus = nil }
                 return attachment
             } catch {
@@ -89,7 +108,12 @@ final class ChatEngine: ObservableObject {
 
     func ask(_ question: Question) {
         guard !isStreaming else { return }
-        cards.append(QACard(question: question))
+        cards.append(QACard(
+            question: question,
+            providerName: provider.displayName,
+            modelName: provider.modelName,
+            pricing: provider.pricing
+        ))
         let cardID = cards[cards.count - 1].id
         isStreaming = true
 
@@ -113,11 +137,23 @@ final class ChatEngine: ObservableObject {
             }
             update(cardID) { $0.isStreaming = false }
             isStreaming = false
+            // Only completed cards are written: a half-streamed answer restored
+            // as if it were finished would read as a truncation bug.
+            persist()
         }
     }
 
     func cancel() {
         askTask?.cancel()
+    }
+
+    /// Drop this document's transcript, on screen and on disk.
+    func clearHistory() {
+        guard !isStreaming else { return }
+        cards.removeAll()
+        guard let documentURL else { return }
+        let history = self.history
+        Task.detached(priority: .utility) { history.clear(for: documentURL) }
     }
 
     private func apply(_ event: ChatEvent, to cardID: UUID) {
@@ -135,6 +171,9 @@ final class ChatEngine: ObservableObject {
                 card.cacheReadTokens = cacheRead
                 card.cacheWriteTokens = cacheWrite
                 card.outputTokens = output
+                card.costUSD = card.pricing?.cost(
+                    input: input, cacheRead: cacheRead, cacheWrite: cacheWrite, output: output
+                )
             case .notice(let text):
                 if !card.notices.contains(text) { card.notices.append(text) }
             case .done:
@@ -146,5 +185,98 @@ final class ChatEngine: ObservableObject {
     private func update(_ cardID: UUID, _ mutate: (inout QACard) -> Void) {
         guard let index = cards.firstIndex(where: { $0.id == cardID }) else { return }
         mutate(&cards[index])
+    }
+
+    // MARK: History
+
+    private func restoreHistory(for url: URL) {
+        let history = self.history
+        Task.detached(priority: .utility) {
+            guard let stored = history.load(for: url) else { return }
+            let restored = stored.cards.map(QACard.init(stored:))
+            await MainActor.run {
+                // Anything asked while the file was being read wins — appending
+                // the restored cards in front keeps chronological order.
+                guard !restored.isEmpty else { return }
+                self.cards = restored + self.cards
+            }
+        }
+    }
+
+    private func persist() {
+        guard let documentURL else { return }
+        let stored = StoredHistory(documentURL: documentURL, cards: cards)
+        let history = self.history
+        Task.detached(priority: .utility) { history.save(stored, for: documentURL) }
+    }
+}
+
+// MARK: - Persistence mapping
+
+extension StoredHistory {
+    /// Only *completed* cards are written. A half-streamed answer restored as
+    /// though it were finished reads as a truncation bug, and there is no way
+    /// for the reader to tell the difference after the fact.
+    init(documentURL: URL, cards: [QACard]) {
+        self.init(
+            documentPath: documentURL.standardizedFileURL.path,
+            cards: cards.filter { !$0.isStreaming }.map(StoredCard.init(card:))
+        )
+    }
+}
+
+extension StoredCard {
+    init(card: QACard) {
+        self.init(
+            id: card.id,
+            askedAt: card.askedAt,
+            questionText: card.question.text,
+            selectedText: card.question.selectedText,
+            selectedTextPage: card.question.selectedTextPage,
+            regionPage: card.question.regionPage,
+            regionThumbnailPNG: card.question.regionImagePNG.flatMap { HistoryStore.thumbnail(png: $0) },
+            answer: card.answer,
+            citations: card.citations.map { StoredCitation(page: $0.page, citedText: $0.citedText) },
+            notices: card.notices,
+            providerName: card.providerName,
+            modelName: card.modelName,
+            inputTokens: card.inputTokens,
+            cacheReadTokens: card.cacheReadTokens,
+            cacheWriteTokens: card.cacheWriteTokens,
+            outputTokens: card.outputTokens,
+            costUSD: card.costUSD,
+            error: card.error
+        )
+    }
+}
+
+extension QACard {
+    /// A restored card carries no `pricing`: its cost was computed when it was
+    /// asked and is replayed, never recomputed.
+    init(stored: StoredCard) {
+        var question = Question(text: stored.questionText)
+        question.selectedText = stored.selectedText
+        question.selectedTextPage = stored.selectedTextPage
+        question.regionImagePNG = stored.regionThumbnailPNG
+        question.regionPage = stored.regionPage
+
+        self.init(
+            id: stored.id,
+            askedAt: stored.askedAt,
+            question: question,
+            providerName: stored.providerName,
+            modelName: stored.modelName,
+            pricing: nil,
+            answer: stored.answer,
+            citations: stored.citations.map { Citation(page: $0.page, citedText: $0.citedText) },
+            notices: stored.notices,
+            inputTokens: stored.inputTokens,
+            cacheReadTokens: stored.cacheReadTokens,
+            cacheWriteTokens: stored.cacheWriteTokens,
+            outputTokens: stored.outputTokens,
+            costUSD: stored.costUSD,
+            error: stored.error,
+            isStreaming: false
+        )
     }
 }

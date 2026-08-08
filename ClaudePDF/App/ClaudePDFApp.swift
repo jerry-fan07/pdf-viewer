@@ -94,7 +94,8 @@ struct DocumentWindow: View {
             } label: {
                 Label("Thumbnails", systemImage: "sidebar.left")
             }
-            .help("Show or hide page thumbnails")
+            .keyboardShortcut("s", modifiers: [.command, .control])
+            .help("Show or hide page thumbnails (⌃⌘S)")
         }
 
         ToolbarItemGroup {
@@ -133,10 +134,12 @@ struct DocumentWindow: View {
 
             Button {
                 chatVisible.toggle()
+                if chatVisible { engine.requestComposerFocus() }
             } label: {
                 Label("Ask", systemImage: "bubble.left.and.text.bubble.right")
             }
-            .help("Show or hide the chat panel")
+            .keyboardShortcut("i", modifiers: [.command, .option])
+            .help("Show or hide the chat panel (⌥⌘I)")
         }
     }
 
@@ -231,24 +234,50 @@ struct DocumentWindow: View {
               let crop = CropExtractor.makeCrop(viewRect: rect, overlay: overlay, pdfView: pdfView)
         else { return }
 
+        chatVisible = true
+
         // Capability-based degradation (PLAN.md §4): a text-only provider still
-        // gets the region's text when there is one, but a figure with no text
-        // layer under it is a dead end worth saying out loud rather than
-        // silently sending a question about an invisible image.
-        if !engine.capabilities.supportsVision {
-            if crop.fallbackText == nil {
-                engine.composerNotice =
-                    "\(engine.providerName) can't see images — switch to Claude for visual questions."
-                engine.pendingCrop = nil
-                chatVisible = true
-                return
-            }
+        // gets the region's text when there is one.
+        guard !engine.capabilities.supportsVision else {
+            engine.composerNotice = nil
+            stage(crop)
+            return
+        }
+        if crop.fallbackText != nil {
             engine.composerNotice =
                 "\(engine.providerName) can't see images — it will read the text inside this region."
-        } else {
-            engine.composerNotice = nil
+            stage(crop)
+            return
         }
 
+        // No text layer under the region. Before calling it a dead end, try
+        // recognising the pixels — a figure's axis labels or a scanned table are
+        // exactly what OCR is for. Off the main actor: Vision on a crop is
+        // fast, but not free.
+        engine.pendingCrop = nil
+        guard AppSettings.ocrEnabled else {
+            engine.composerNotice =
+                "\(engine.providerName) can't see images — switch to Claude for visual questions."
+            return
+        }
+        engine.composerNotice = "Reading the text in this region…"
+        let png = crop.png
+        Task {
+            let recognised = await Task.detached(priority: .userInitiated) {
+                OCRExtractor.recognizeText(inPNG: png)
+            }.value
+            guard let recognised else {
+                engine.composerNotice = "\(engine.providerName) can't see images, and no text "
+                    + "could be recognised here — switch to Claude for visual questions."
+                return
+            }
+            engine.composerNotice = "\(engine.providerName) can't see images — it will read the "
+                + "text recognised inside this region."
+            stage(PendingCrop(png: png, pageNumber: crop.pageNumber, fallbackText: recognised))
+        }
+    }
+
+    private func stage(_ crop: PendingCrop) {
         engine.pendingCrop = crop
         chatVisible = true
         engine.requestComposerFocus()

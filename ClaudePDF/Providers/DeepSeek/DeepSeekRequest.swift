@@ -24,6 +24,14 @@ enum DeepSeekModel: String, CaseIterable, Identifiable, Sendable {
         case .v4Pro: return (0.003625, 0.435, 0.87)
         }
     }
+
+    /// The same rates in the shape the per-answer cost line wants. DeepSeek
+    /// caches automatically and bills no write premium, so `cacheWrite` is zero —
+    /// and the provider never reports cache-write tokens anyway.
+    var tokenPricing: TokenPricing {
+        TokenPricing(input: pricing.cacheMiss, cacheRead: pricing.cacheHit,
+                     cacheWrite: 0, output: pricing.output)
+    }
 }
 
 /// Thinking on the V4 models is **enabled by default at `high` effort**, which is

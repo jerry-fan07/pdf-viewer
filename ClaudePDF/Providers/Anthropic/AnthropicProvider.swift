@@ -24,6 +24,9 @@ struct AnthropicProvider: ChatProvider {
 
     let model: AnthropicModel
 
+    var modelName: String? { model.displayName }
+    var pricing: TokenPricing? { model.pricing }
+
     // MARK: Transport
 
     private static let apiBase = URL(string: "https://api.anthropic.com/v1")!

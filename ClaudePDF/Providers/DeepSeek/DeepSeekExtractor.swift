@@ -12,6 +12,8 @@ struct ExtractedDocument: Equatable {
     /// Pages actually represented in `text`. Lower than `pageCount` only when the
     /// document blew the character budget.
     let includedPages: Int
+    /// Pages whose text came from OCR rather than from the PDF's own text layer.
+    var ocrPages: Int = 0
 
     var wasTruncated: Bool { includedPages < pageCount }
 }
@@ -30,12 +32,93 @@ enum DeepSeekExtractor {
 
     /// Read a PDF off disk and extract it. Task-confined: the `PDFDocument` is
     /// created and consumed here, never shared across threads.
-    static func extract(from url: URL, characterBudget: Int = characterBudget) throws -> ExtractedDocument {
+    ///
+    /// Pages with no text layer are recognised with Vision when `ocr` is on
+    /// (PLAN.md §7) — that covers both a wholly scanned document and the
+    /// image-only pages inside an otherwise-searchable one, which Phase 4 passed
+    /// through as silent gaps. `progress` reports (pages recognised, pages to
+    /// recognise) so a long scan doesn't look like a hang.
+    static func extract(
+        from url: URL,
+        characterBudget: Int = characterBudget,
+        ocr: Bool = AppSettings.ocrEnabled,
+        cache: OCRCache = .shared,
+        progress: (@Sendable (Int, Int) -> Void)? = nil
+    ) throws -> ExtractedDocument {
         guard let document = PDFDocument(url: url) else {
             throw DeepSeekError.unreadableDocument(url.lastPathComponent)
         }
-        let pageTexts = (0..<document.pageCount).map { document.page(at: $0)?.string }
-        return try assemble(pageTexts: pageTexts, characterBudget: characterBudget)
+        var pageTexts = (0..<document.pageCount).map { document.page(at: $0)?.string }
+
+        var ocrPages = 0
+        if ocr {
+            ocrPages = fillGapsWithOCR(
+                &pageTexts, document: document, url: url, cache: cache, progress: progress
+            )
+        }
+
+        do {
+            var extracted = try assemble(pageTexts: pageTexts, characterBudget: characterBudget)
+            extracted.ocrPages = ocrPages
+            return extracted
+        } catch DeepSeekError.noTextLayer(let pages) where ocr {
+            // OCR ran and still found nothing: saying "no text layer" would
+            // invite the reader to turn on a setting that is already on.
+            throw DeepSeekError.ocrFoundNothing(pages: pages)
+        }
+    }
+
+    /// Recognise every page that came back empty, in place. Returns how many
+    /// pages OCR contributed.
+    ///
+    /// Results are cached on disk under the document key: the extracted body is
+    /// the cached *prompt* prefix, so two attaches of the same file must produce
+    /// byte-identical text, and re-running Vision over a long scan is minutes of
+    /// work to arrive at the same answer.
+    private static func fillGapsWithOCR(
+        _ pageTexts: inout [String?],
+        document: PDFDocument,
+        url: URL,
+        cache: OCRCache,
+        progress: (@Sendable (Int, Int) -> Void)?
+    ) -> Int {
+        let gaps = pageTexts.indices.filter {
+            (pageTexts[$0]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "").isEmpty
+        }
+        guard !gaps.isEmpty else { return 0 }
+
+        var cached = cache.load(for: url)
+        var recognised = 0
+        var done = 0
+        var cacheChanged = false
+
+        for index in gaps {
+            defer {
+                done += 1
+                progress?(done, gaps.count)
+            }
+            let key = String(index + 1)
+            if let text = cached[key] {
+                // An empty cached string is a remembered "nothing here", and is
+                // worth honouring — re-OCRing a blank page every open is waste.
+                if !text.isEmpty {
+                    pageTexts[index] = text
+                    recognised += 1
+                }
+                continue
+            }
+            guard let page = document.page(at: index) else { continue }
+            let text = OCRExtractor.recognizeText(in: page)
+            cached[key] = text ?? ""
+            cacheChanged = true
+            if let text {
+                pageTexts[index] = text
+                recognised += 1
+            }
+        }
+
+        if cacheChanged { cache.save(cached, for: url) }
+        return recognised
     }
 
     /// Pure half: page strings in, annotated body out. Split from `extract` so the
@@ -64,8 +147,8 @@ enum DeepSeekExtractor {
             sawText = true
         }
 
-        // Scanned PDFs have no text layer at all. OCR is Phase 6; until then this
-        // is a readable dead end pointing at a provider that reads pages natively.
+        // A scanned PDF with OCR turned off has nothing to send. `extract` turns
+        // this into a different message when OCR ran and still found nothing.
         guard sawText else { throw DeepSeekError.noTextLayer(pages: pageTexts.count) }
 
         return ExtractedDocument(text: body, pageCount: pageTexts.count, includedPages: includedPages)

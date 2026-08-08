@@ -27,6 +27,16 @@ struct ChatPanelView: View {
             Text("Ask about this document")
                 .font(.headline)
             Spacer()
+            if engine.hasHistory {
+                Button(role: .destructive) {
+                    engine.clearHistory()
+                } label: {
+                    Image(systemName: "trash")
+                }
+                .buttonStyle(.borderless)
+                .disabled(engine.isStreaming)
+                .help("Clear this document's saved questions and answers")
+            }
             Text(engine.providerName)
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -300,12 +310,13 @@ private struct QACardView: View {
                     .textSelection(.enabled)
             }
 
-            if let fraction = card.cachedFraction {
-                Text(usageSummary(fraction))
+            if let footer = usageSummary {
+                Text(footer)
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
-                    .help("Share of this question's input read from the cached document. "
-                          + "0% after the first question means the cached prefix is being mutated.")
+                    .help("Who answered, how much of this question's input was read from "
+                          + "the cached document, and what it cost. 0% cached after the first "
+                          + "question means the cached prefix is being mutated.")
             }
         }
         .padding(10)
@@ -313,11 +324,23 @@ private struct QACardView: View {
         .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
     }
 
-    private func usageSummary(_ fraction: Double) -> String {
-        var summary = "\(Int((fraction * 100).rounded()))% cached"
-        if let output = card.outputTokens {
-            summary += " · \(output) tokens out"
+    /// One tertiary line under each answer: provenance, cache share, cost. Every
+    /// part is optional — the subscription path has no per-token bill to show,
+    /// and a failed question has no usage at all.
+    private var usageSummary: String? {
+        var parts: [String] = []
+        if !card.providerName.isEmpty {
+            parts.append([card.providerName, card.modelName].compactMap { $0 }.joined(separator: " · "))
         }
-        return summary
+        if let fraction = card.cachedFraction {
+            parts.append("\(Int((fraction * 100).rounded()))% cached")
+        }
+        if let output = card.outputTokens {
+            parts.append("\(output) tokens out")
+        }
+        if let cost = card.costUSD {
+            parts.append(TokenPricing.format(cost))
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 }

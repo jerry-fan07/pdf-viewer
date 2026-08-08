@@ -30,6 +30,17 @@ enum AppSettings {
     static let claudeCodeEffortKey = "claudeCode.effort"
     static let deepseekModelKey = "deepseek.model"
     static let deepseekThinkingKey = "deepseek.thinking"
+    static let ocrEnabledKey = "ocr.enabled"
+
+    /// OCR for pages with no text layer, on the text-only path. On by default:
+    /// without it a scanned document is a dead end there.
+    ///
+    /// Turning it off changes the extracted body, which *is* the cached prefix —
+    /// so a document attached afterwards pays one fresh cache miss. Documents
+    /// already open keep the text they were attached with.
+    static var ocrEnabled: Bool {
+        UserDefaults.standard.object(forKey: ocrEnabledKey) as? Bool ?? true
+    }
 
     static var anthropicModel: AnthropicModel {
         AnthropicModel(rawValue: UserDefaults.standard.string(forKey: anthropicModelKey) ?? "") ?? .opus5
