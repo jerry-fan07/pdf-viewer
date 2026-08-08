@@ -157,6 +157,8 @@ final class ClaudeCodePromptTests: XCTestCase {
         XCTAssertTrue(prompt.contains("/tmp/crops/crop-1.png"))
         XCTAssertTrue(prompt.contains("What does this show?"))
         XCTAssertTrue(prompt.contains("page numbers"), "no native citations on this path")
+        XCTAssertTrue(prompt.contains("LaTeX"), "models answer in Unicode unless asked")
+        XCTAssertTrue(prompt.contains("$$"))
     }
 
     func testAskPromptOmitsAbsentAttachments() {

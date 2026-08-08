@@ -116,6 +116,15 @@ final class DeepSeekTests: XCTestCase {
         XCTAssertTrue(system.hasSuffix(document.text))
     }
 
+    /// See `AnthropicRequestTests.testSystemPromptAsksForLaTeX` — same contract, and it has
+    /// to hold on every provider or the renderer is dead weight on that path.
+    func testPreambleAsksForLaTeX() {
+        let preamble = DeepSeekRequestBuilder.systemPreamble
+        XCTAssertTrue(preamble.contains("$$"))
+        XCTAssertTrue(preamble.contains("LaTeX"))
+        XCTAssertTrue(preamble.contains("\\phi"))
+    }
+
     func testTruncationNoticeRidesInThePrefixNotTheQuestion() {
         let clipped = ExtractedDocument(text: "[Page 1]\nonly this", pageCount: 400, includedPages: 3)
         let system = DeepSeekRequestBuilder.systemMessage(document: clipped, title: "big.pdf")

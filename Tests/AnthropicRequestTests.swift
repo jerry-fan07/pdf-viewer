@@ -110,6 +110,16 @@ final class AnthropicRequestTests: XCTestCase {
         XCTAssertEqual(first.system[0].text, second.system[0].text)
     }
 
+    /// The typesetter is only half the feature. Left alone, models answer a maths paper in
+    /// Unicode (φ, ≈, √) and `LaTeXSegmenter` correctly finds nothing to typeset, so the
+    /// prompt has to ask for TeX or none of the rendering ever runs.
+    func testSystemPromptAsksForLaTeX() {
+        let prompt = AnthropicRequestBuilder.systemPrompt
+        XCTAssertTrue(prompt.contains("$$"), "no display delimiter requested")
+        XCTAssertTrue(prompt.contains("LaTeX"))
+        XCTAssertTrue(prompt.contains("\\phi"), "the worked example is what makes it stick")
+    }
+
     // MARK: Request envelope
 
     func testRequestEnvelopeStreamsAndNamesTheSelectedModel() throws {

@@ -126,6 +126,10 @@ enum DeepSeekRequestBuilder {
         Lead with the answer, then the supporting detail. Keep it short: no restating \
         the question, no narrating what you are about to do. Use Markdown sparingly — \
         short paragraphs, and lists only when they earn their place.
+
+        Write mathematics as LaTeX so the viewer can typeset it: $…$ inline, $$…$$ for \
+        a displayed equation. Prefer it to Unicode symbols and plain-text notation — \
+        write $\\phi(H) \\neq 1$, not φ(H) ≠ 1.
         """
 
     /// The cached prefix: frozen preamble + the document, and nothing else.

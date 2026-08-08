@@ -53,10 +53,14 @@ enum ClaudeCodePrompt {
         parts.append("Question: \(question.text)")
 
         // No API-native citations on this path, so page numbers have to be asked
-        // for (PLAN.md capability matrix: best-effort, prompted).
+        // for (PLAN.md capability matrix: best-effort, prompted). The LaTeX request is
+        // the same story: left alone, models answer papers in Unicode (φ, ≈, √) and the
+        // typesetter never sees anything to typeset.
         parts.append(
             "Answer from the PDF already in this conversation. Reference page numbers "
-            + "inline so the reader can find the passage. Lead with the answer and keep it short."
+            + "inline so the reader can find the passage. Lead with the answer and keep it short. "
+            + "Write mathematics as LaTeX so the viewer can typeset it: $…$ inline, $$…$$ for a "
+            + "displayed equation — write $\\phi(H) \\neq 1$, not φ(H) ≠ 1."
         )
 
         return parts.joined(separator: "\n\n")
