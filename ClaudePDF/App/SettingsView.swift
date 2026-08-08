@@ -3,6 +3,7 @@ import SwiftUI
 struct SettingsView: View {
     @State private var anthropicKey = ""
     @State private var deepseekKey = ""
+    @AppStorage(AppSettings.pdfAppearanceKey) private var pdfAppearance = PDFAppearanceMode.matchSystem.rawValue
     @AppStorage(AppSettings.providerChoiceKey) private var providerChoice = ProviderChoice.automatic.rawValue
     @AppStorage(AppSettings.anthropicModelKey) private var anthropicModel = AnthropicModel.opus5.rawValue
     @AppStorage(AppSettings.claudeCodeEffortKey) private var claudeCodeEffort = ClaudeCodeEffort.cliDefault.rawValue
@@ -32,6 +33,19 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
+            Section("Appearance") {
+                Picker("PDF pages", selection: $pdfAppearance) {
+                    ForEach(PDFAppearanceMode.allCases) { mode in
+                        Text(mode.displayName).tag(mode.rawValue)
+                    }
+                }
+                Text("Dark pages invert the document on screen, keeping colours at their own "
+                     + "hue. The document itself is untouched: a region screenshot still "
+                     + "reaches the provider the way the PDF was authored. ⇧⌘D toggles it.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section("Provider") {
                 Picker("Use", selection: $providerChoice) {
                     ForEach(ProviderChoice.allCases) { choice in

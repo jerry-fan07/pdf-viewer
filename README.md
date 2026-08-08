@@ -22,7 +22,7 @@ Tests live in `Tests` and run against the app as their test host — no GUI auto
 
 ## Status
 
-All seven phases are done: the viewer, selection/crop, all three providers (Anthropic API, Claude subscription via the Claude Code CLI, DeepSeek), the polish pass — per-document history, per-answer cost, OCR for scanned pages, and an app icon — and live provider switching, with **207 unit tests**. The subscription path has been verified live; the two API paths are code-complete with their live cache-hit criteria still unverified (both need an API key).
+All seven phases are done: the viewer, selection/crop, all three providers (Anthropic API, Claude subscription via the Claude Code CLI, DeepSeek), the polish pass — per-document history, per-answer cost, OCR for scanned pages, and an app icon — and live provider switching, with **265 unit tests**. The subscription path has been verified live; the two API paths are code-complete with their live cache-hit criteria still unverified (both need an API key).
 
 Two things are deliberately not finished, both blocked on credentials rather than code: **notarization** (the Developer ID build is signed, hardened and verified — `Scripts/release.sh --notarize` submits and staples once `xcrun notarytool store-credentials` has run) and the **cache pre-warm knob**, which PLAN §7 asks to be verified against `claude-opus-5` before shipping. See the phase list in [PLAN.md](PLAN.md).
 
@@ -37,7 +37,23 @@ Each answer carries the provider and model that produced it, how much of its inp
 
 **Switching provider** — the provider capsule at the top of the chat panel is a menu: pick another one and the open document re-prepares itself for it, no reopening. The transcript stays, and each card goes on naming whoever answered it, so a switch reads as a change of voice rather than a reset. Switching costs one fresh cache write on the next question; switching *back* to a provider this document is already prepared for is free. A change in Settings applies to open windows too — except to a window you have switched by hand, which keeps what you gave it. A region crop staged for Claude is re-read as text (or recognised with OCR) if you switch to a text-only provider. Preparing a large scanned document can be cancelled from the status line, and retried.
 
-**Shortcuts:** ⌘F find (⌘G / ⇧⌘G next and previous, Esc clears) · ⌘L ask about the selection · ⇧⌘A region crop · ⌥⌘I chat panel · ⌃⌘S thumbnails · ⌘− / ⌘0 / ⌘= zoom.
+**Shortcuts:** ⌘F find (⌘G / ⇧⌘G next and previous, Esc clears) · ⌘L ask about the selection · ⇧⌘A region crop · ⇧⌘D dark pages · ⌥⌘I chat panel · ⌃⌘S thumbnails · ⌘− / ⌘0 / ⌘= zoom.
+
+## Dark mode
+
+The chrome has always followed the system; **the pages do too** ([screenshot](docs/dark-mode.png)). ⇧⌘D toggles it, and *Settings → Appearance* chooses between *Match system*, *Always light*, and *Always dark* — the toolbar toggle picks a side explicitly, so a document you have darkened by hand does not flip back at sunrise. Thumbnails follow the pages.
+
+Pages are inverted with a Core Image filter on the view layer, not by overriding `PDFPage.draw`: `CropRenderer` draws through that same call, so an override would invert every region screenshot on its way to a provider. So a **crop is always sent — and shown in its chat card — as the document authored it**, light background and all, even while you are reading dark. The model gets the original; only the screen changes.
+
+The inversion is deliberately not full-range. Paper lands at **15/255** and ink stops at **200/255** rather than going pure black under pure white, which is a glare source rather than a night mode; the same map tones down saturated figures. Three details the obvious implementation gets wrong, each measured off the running app rather than reasoned about:
+
+- **Do the arithmetic in the right space.** Core Image works in linear light, where `1 − x` leaves a 0.9 grey panel at 145/255 — a glaring mid-grey — instead of 40. The invert sits between an sRGB tone-curve pair so it happens in the space the colours were authored in.
+- **Use the real sRGB curve, not a 2.2 power approximation.** The two diverge most near black, which is exactly where the paper level lives: approximating put paper at 4/255 instead of 15.
+- **Compensate the endpoints.** Core Image's tone-curve pair is not quite an exact inverse, so the target levels handed in straight render as 18/210. `PDFAppearanceTests` asserts the *rendered* levels, so the tuning is checked against the spec rather than against the constants.
+
+A 180° hue rotation after the invert keeps a blue figure blue rather than turning it orange, and the ⌘F highlight is picked for what it looks like *after* the filter (`systemYellow` would arrive as a muddy 109/98/0 olive).
+
+Photographs come out as negatives — a known limitation of inverting the page wholesale, and the reason the setting has an *Always light* escape hatch. The answer-to-source flash keeps the system accent colour, which survives the filter as a blue wash rather than needing its own compensation.
 
 ## Releasing
 

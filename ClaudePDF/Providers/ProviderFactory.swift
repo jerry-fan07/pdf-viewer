@@ -78,6 +78,8 @@ enum ProviderChoice: String, CaseIterable, Identifiable, Sendable {
 /// Non-secret provider preferences. API keys live in the Keychain (PLAN.md §7);
 /// the subscription path stores nothing at all.
 enum AppSettings {
+    /// Viewer-side, but this is the app's one defaults namespace. Read through `@AppStorage`.
+    static let pdfAppearanceKey = "viewer.pdfAppearance"
     static let anthropicModelKey = "anthropic.model"
     static let providerChoiceKey = "provider.choice"
     static let claudeCodeEffortKey = "claudeCode.effort"
