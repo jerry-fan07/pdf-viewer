@@ -136,6 +136,7 @@ enum DeepSeekError: LocalizedError {
     case api(status: Int, detail: String)
     case stream(message: String)
     case noTextLayer(pages: Int)
+    case ocrFoundNothing(pages: Int)
     case unreadableDocument(String)
     case badResponse
 
@@ -153,7 +154,12 @@ enum DeepSeekError: LocalizedError {
             return "Stream error: \(message)"
         case .noTextLayer(let pages):
             return "This \(pages)-page PDF has no text layer, and DeepSeek reads only text. "
-                + "Use Claude for this document — it reads the pages themselves."
+                + "Turn on \"Read scanned pages\" in Settings, or use Claude for this "
+                + "document — it reads the pages themselves."
+        case .ocrFoundNothing(let pages):
+            return "No text could be recognised on any of this \(pages)-page PDF, and "
+                + "DeepSeek reads only text. Use Claude for this document — it reads the "
+                + "pages themselves."
         case .unreadableDocument(let name):
             return "Could not read \(name) as a PDF."
         case .badResponse:
