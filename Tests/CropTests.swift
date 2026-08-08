@@ -2,10 +2,14 @@ import XCTest
 import PDFKit
 @testable import ClaudePDF
 
+/// The overlay → `PendingCrop` wiring: the part of the crop path that owns a live `PDFView`.
+///
+/// The geometry and rasterization underneath it are covered far more thoroughly by
+/// `CropGeometryTests` and `CropRendererTests` (rotation, non-zero box origins, pixel caps,
+/// text capture, zoom independence), so this file deliberately does not retest them — it
+/// checks only that this layer hands the right rect to that pipeline and maps the result back.
 @MainActor
 final class CropTests: XCTestCase {
-
-    // MARK: Helpers
 
     private func makeDocument(pageSize: NSSize = NSSize(width: 400, height: 300)) throws -> PDFDocument {
         let image = NSImage(size: pageSize, flipped: false) { rect in
@@ -19,39 +23,10 @@ final class CropTests: XCTestCase {
         return document
     }
 
-    // MARK: Rendering
-
-    func testRenderPixelDimensionsAt2x() throws {
-        let document = try makeDocument()
-        let page = try XCTUnwrap(document.page(at: 0))
-        let png = try XCTUnwrap(
-            CropExtractor.render(page: page, rect: CGRect(x: 10, y: 10, width: 100, height: 50))
-        )
-        let rep = try XCTUnwrap(NSBitmapImageRep(data: png))
-        XCTAssertEqual(rep.pixelsWide, 200)
-        XCTAssertEqual(rep.pixelsHigh, 100)
-    }
-
-    func testRenderCapsLongEdge() throws {
-        let document = try makeDocument(pageSize: NSSize(width: 2000, height: 1200))
-        let page = try XCTUnwrap(document.page(at: 0))
-        let png = try XCTUnwrap(
-            CropExtractor.render(page: page, rect: CGRect(x: 0, y: 0, width: 1800, height: 900))
-        )
-        let rep = try XCTUnwrap(NSBitmapImageRep(data: png))
-        XCTAssertEqual(rep.pixelsWide, 1600)
-        XCTAssertEqual(rep.pixelsHigh, 800)
-    }
-
-    func testRenderRejectsDegenerateRect() throws {
-        let document = try makeDocument()
-        let page = try XCTUnwrap(document.page(at: 0))
-        XCTAssertNil(CropExtractor.render(page: page, rect: .zero))
-    }
-
     // MARK: View ↔ page geometry
 
-    /// The crop pipeline assumes PDFView's rect conversion is invertible at any zoom.
+    /// The whole crop path rests on this: the crop is defined in page space, so if PDFView's
+    /// conversion is invertible at any zoom, zoom needs no compensation anywhere else.
     func testViewToPageRoundTripAcrossZoomLevels() throws {
         let document = try makeDocument()
         let pdfView = PDFView(frame: NSRect(x: 0, y: 0, width: 600, height: 600))
@@ -106,7 +81,7 @@ final class CropTests: XCTestCase {
         }
     }
 
-    func testMakeCropRejectsTinyOrOffPageRects() throws {
+    func testMakeCropRejectsRectsThatMissThePage() throws {
         let document = try makeDocument()
         let parent = NSView(frame: NSRect(x: 0, y: 0, width: 600, height: 600))
         let pdfView = PDFView(frame: parent.bounds)
@@ -116,9 +91,20 @@ final class CropTests: XCTestCase {
         parent.addSubview(overlay)
         pdfView.layoutDocumentView()
 
+        // `page(for:nearest:)` always returns *some* page, so landing off the paper has to be
+        // caught by the clamp rather than by page lookup.
         XCTAssertNil(CropExtractor.makeCrop(
-            viewRect: CGRect(x: 300, y: 300, width: 2, height: 2),
+            viewRect: CGRect(x: 5000, y: 5000, width: 100, height: 100),
             overlay: overlay, pdfView: pdfView
         ))
+    }
+
+    /// The minimum-drag gate lives in the overlay, not in `makeCrop`: it is a gesture
+    /// question, and 8 *view* points means the same thing at every zoom, where the old
+    /// page-space threshold quietly got stricter as you zoomed out.
+    func testSubThresholdDragIsRejectedBeforeItReachesMakeCrop() {
+        XCTAssertFalse(CropGeometry.isUsableDrag(CGRect(x: 0, y: 0, width: 4, height: 40)))
+        XCTAssertFalse(CropGeometry.isUsableDrag(CGRect(x: 0, y: 0, width: 2, height: 2)))
+        XCTAssertTrue(CropGeometry.isUsableDrag(CGRect(x: 0, y: 0, width: 20, height: 20)))
     }
 }
