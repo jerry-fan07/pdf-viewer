@@ -21,6 +21,10 @@ final class PDFViewerController: ObservableObject {
     private var searchTask: Task<Void, Never>?
     private var restoreDefaultsKey: String?
 
+    /// Deliberately not `@Published`: the view layer drives this, and publishing from
+    /// `updateNSView` would mutate state during a SwiftUI update pass.
+    private var darkPages = false
+
     // MARK: Lifecycle
 
     /// Must be called before the PDFView attaches so restore has its key.
@@ -60,6 +64,19 @@ final class PDFViewerController: ObservableObject {
         let saved = UserDefaults.standard.integer(forKey: key)
         guard saved > 1, saved <= document.pageCount, let page = document.page(at: saved - 1) else { return }
         view.go(to: page)
+    }
+
+    // MARK: Appearance
+
+    /// Existing matches keep their old colour otherwise — the highlight is baked into the
+    /// selection, not re-derived at draw time.
+    func setDarkPages(_ dark: Bool) {
+        guard dark != darkPages else { return }
+        darkPages = dark
+        guard !matches.isEmpty else { return }
+        let color = PDFPageDarkening.searchHighlightColor(dark: dark)
+        for selection in matches { selection.color = color }
+        pdfView?.highlightedSelections = matches
     }
 
     // MARK: Navigation & zoom
@@ -119,7 +136,8 @@ final class PDFViewerController: ObservableObject {
     private func performSearch(_ query: String) {
         guard let view = pdfView, let document = view.document else { return }
         let found = Array(document.findString(query, withOptions: [.caseInsensitive]).prefix(500))
-        for selection in found { selection.color = .systemYellow }
+        let color = PDFPageDarkening.searchHighlightColor(dark: darkPages)
+        for selection in found { selection.color = color }
         matches = found
         currentMatchIndex = 0
         view.highlightedSelections = found.isEmpty ? nil : found
@@ -180,7 +198,16 @@ final class AskablePDFView: PDFView {
 struct PDFKitView: NSViewRepresentable {
     let document: PDFDocument
     let controller: PDFViewerController
+    var darkPages = false
     var onAskAboutSelection: (() -> Void)? = nil
+
+    /// Holds the light-mode background so turning dark pages back off restores PDFKit's own
+    /// colour — by then `backgroundColor` is the pre-inversion grey, not the original.
+    final class Coordinator {
+        var lightBackground: NSColor?
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
 
     func makeNSView(context: Context) -> PDFView {
         let view = AskablePDFView()
@@ -189,6 +216,9 @@ struct PDFKitView: NSViewRepresentable {
         view.displaysPageBreaks = false
         view.document = document
         view.onAskAboutSelection = onAskAboutSelection
+        context.coordinator.lightBackground = view.backgroundColor
+        PDFPageDarkening.apply(dark: darkPages, to: view, lightBackground: view.backgroundColor)
+        controller.setDarkPages(darkPages)
         // Defer: attach() publishes state, which must not happen during view construction.
         DispatchQueue.main.async { controller.attach(view: view) }
         return view
@@ -196,6 +226,12 @@ struct PDFKitView: NSViewRepresentable {
 
     func updateNSView(_ nsView: PDFView, context: Context) {
         (nsView as? AskablePDFView)?.onAskAboutSelection = onAskAboutSelection
+        PDFPageDarkening.apply(
+            dark: darkPages,
+            to: nsView,
+            lightBackground: context.coordinator.lightBackground ?? nsView.backgroundColor
+        )
+        controller.setDarkPages(darkPages)
         if nsView.document !== document {
             nsView.document = document
             DispatchQueue.main.async { controller.attach(view: nsView) }
@@ -206,15 +242,18 @@ struct PDFKitView: NSViewRepresentable {
 /// Page-thumbnail sidebar bound to the main PDFView (PDFKit keeps them in sync).
 struct PDFThumbnailSidebar: NSViewRepresentable {
     @ObservedObject var controller: PDFViewerController
+    var darkPages = false
 
     func makeNSView(context: Context) -> PDFThumbnailView {
         let view = PDFThumbnailView()
         view.thumbnailSize = CGSize(width: 96, height: 128)
         view.backgroundColor = .clear
+        PDFPageDarkening.apply(dark: darkPages, to: view)
         return view
     }
 
     func updateNSView(_ nsView: PDFThumbnailView, context: Context) {
+        PDFPageDarkening.apply(dark: darkPages, to: nsView)
         // controller.viewReady flips after the PDFView attaches, re-running this update.
         if nsView.pdfView !== controller.pdfView {
             nsView.pdfView = controller.pdfView

@@ -46,10 +46,18 @@ struct DocumentWindow: View {
     @State private var pageField = "1"
     @FocusState private var searchFocused: Bool
 
+    @AppStorage(AppSettings.pdfAppearanceKey)
+    private var pdfAppearance = PDFAppearanceMode.matchSystem.rawValue
+    @Environment(\.colorScheme) private var colorScheme
+
+    private var darkPages: Bool {
+        (PDFAppearanceMode(rawValue: pdfAppearance) ?? .matchSystem).darkPages(system: colorScheme)
+    }
+
     var body: some View {
         HSplitView {
             if thumbnailsVisible {
-                PDFThumbnailSidebar(controller: viewer)
+                PDFThumbnailSidebar(controller: viewer, darkPages: darkPages)
                     .frame(width: 150)
             }
 
@@ -59,6 +67,7 @@ struct DocumentWindow: View {
                         PDFKitView(
                             document: pdf,
                             controller: viewer,
+                            darkPages: darkPages,
                             onAskAboutSelection: captureSelection
                         )
                         if cropMode {
@@ -131,6 +140,13 @@ struct DocumentWindow: View {
             .keyboardShortcut("a", modifiers: [.command, .shift])
             .help("Drag to screenshot a region and ask about it (⇧⌘A)")
 
+            Toggle(isOn: darkPagesBinding) {
+                Label("Dark Pages", systemImage: darkPages ? "moon.fill" : "sun.max")
+            }
+            .toggleStyle(.button)
+            .keyboardShortcut("d", modifiers: [.command, .shift])
+            .help("Render the document dark (⇧⌘D) — set it back to follow the system in Settings")
+
             Button {
                 chatVisible.toggle()
             } label: {
@@ -138,6 +154,15 @@ struct DocumentWindow: View {
             }
             .help("Show or hide the chat panel")
         }
+    }
+
+    /// Toggling picks a side explicitly: once you have overruled the system for this document,
+    /// following it again would flip the page out from under you at sunset.
+    private var darkPagesBinding: Binding<Bool> {
+        Binding(
+            get: { darkPages },
+            set: { pdfAppearance = ($0 ? PDFAppearanceMode.dark : .light).rawValue }
+        )
     }
 
     private var pageIndicator: some View {
