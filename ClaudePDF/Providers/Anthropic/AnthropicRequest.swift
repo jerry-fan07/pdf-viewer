@@ -25,6 +25,18 @@ enum AnthropicModel: String, CaseIterable, Identifiable, Sendable {
         case .opus5, .sonnet5: return 600
         }
     }
+
+    /// Base input/output rates, USD per million tokens. Cache read (0.1×) and
+    /// the 1-hour cache write (2×) are derived in `TokenPricing.anthropic`.
+    /// Sonnet 5 carries an introductory $2/$10 through 2026-08-31; the standard
+    /// rate is used here so the figure doesn't quietly become wrong in September.
+    var pricing: TokenPricing {
+        switch self {
+        case .opus5: return .anthropic(input: 5, output: 25)
+        case .sonnet5: return .anthropic(input: 3, output: 15)
+        case .haiku45: return .anthropic(input: 1, output: 5)
+        }
+    }
 }
 
 // MARK: - Content blocks

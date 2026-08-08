@@ -127,6 +127,67 @@ enum PDFFixtures {
         ],
     ]
 
+    /// A "scanned" document: each page's text is rasterised into a bitmap and the
+    /// bitmap is stamped onto the page, so the PDF carries **no text layer** at
+    /// all — `page.string` is nil, exactly as for a real scan. This is what the
+    /// OCR path exists for.
+    ///
+    /// `words` gives one page per entry. Drawn large, black on white, in
+    /// Helvetica: the point is to exercise the pipeline, not Vision's tolerance
+    /// for bad scans.
+    static func makeScannedDocument(words: [String], pageSize: CGSize = CGSize(width: 612, height: 792)) -> PDFDocument {
+        let data = NSMutableData()
+        let consumer = CGDataConsumer(data: data)!
+        var mediaBox = CGRect(origin: .zero, size: pageSize)
+        let context = CGContext(consumer: consumer, mediaBox: &mediaBox, nil)!
+
+        for word in words {
+            context.beginPDFPage(nil)
+            context.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
+            context.fill(mediaBox)
+            if let bitmap = rasterise(word, size: pageSize) {
+                context.draw(bitmap, in: mediaBox)
+            }
+            context.endPDFPage()
+        }
+        context.closePDF()
+
+        let document = PDFDocument(data: data as Data)!
+        retained.append(document)
+        return document
+    }
+
+    /// Text → pixels. Rendered at 2× and drawn back down, so the glyph edges the
+    /// recogniser sees are the ones a real scan would have.
+    private static func rasterise(_ text: String, size: CGSize) -> CGImage? {
+        let scale: CGFloat = 2
+        let width = Int(size.width * scale), height = Int(size.height * scale)
+        guard let context = CGContext(
+            data: nil, width: width, height: height,
+            bitsPerComponent: 8, bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue
+        ) else { return nil }
+
+        context.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        context.setFillColor(CGColor(red: 0, green: 0, blue: 0, alpha: 1))
+
+        let font = CTFontCreateWithName("Helvetica" as CFString, 96 * scale, nil)
+        let attributed = NSAttributedString(string: text, attributes: [
+            .font: font,
+            .foregroundColor: CGColor(red: 0, green: 0, blue: 0, alpha: 1),
+        ])
+        let line = CTLineCreateWithAttributedString(attributed)
+        let bounds = CTLineGetBoundsWithOptions(line, [])
+        context.textPosition = CGPoint(
+            x: (CGFloat(width) - bounds.width) / 2,
+            y: (CGFloat(height) - bounds.height) / 2
+        )
+        CTLineDraw(line, context)
+        return context.makeImage()
+    }
+
     /// Marker rect translated into absolute (unrotated) page space for a given box origin —
     /// the space `PDFView.convert(_:to: page)` speaks.
     static func inPageSpace(_ marker: CGRect, origin: CGPoint) -> CGRect {

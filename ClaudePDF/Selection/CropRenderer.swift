@@ -56,6 +56,23 @@ enum CropRenderer {
         scale: CGFloat = CropGeometry.defaultScale,
         maxPixelEdge: CGFloat = CropGeometry.defaultMaxPixelEdge
     ) -> (Data, CGSize)? {
+        guard let (image, pixelSize) = renderImage(
+            page: page, clampedPageRect: clampedPageRect,
+            box: box, scale: scale, maxPixelEdge: maxPixelEdge
+        ) else { return nil }
+        guard let data = encodePNG(image) else { return nil }
+        return (data, pixelSize)
+    }
+
+    /// The raster half of `renderPNG`, kept separate so OCR can read pixels
+    /// without a PNG round-trip (`OCRExtractor`).
+    static func renderImage(
+        page: PDFPage,
+        clampedPageRect: CGRect,
+        box: PDFDisplayBox = .cropBox,
+        scale: CGFloat = CropGeometry.defaultScale,
+        maxPixelEdge: CGFloat = CropGeometry.defaultMaxPixelEdge
+    ) -> (CGImage, CGSize)? {
         let bounds = page.bounds(for: box)
         // The rect the *renderer* needs: origin-normalized and rotated. See CropGeometry.
         let target = CropGeometry.renderRect(
@@ -87,12 +104,16 @@ enum CropRenderer {
         context.restoreGState()
 
         guard let image = context.makeImage() else { return nil }
+        return (image, raster.pixelSize)
+    }
+
+    static func encodePNG(_ image: CGImage) -> Data? {
         let data = NSMutableData()
         guard let destination = CGImageDestinationCreateWithData(
             data, UTType.png.identifier as CFString, 1, nil
         ) else { return nil }
         CGImageDestinationAddImage(destination, image, nil)
         guard CGImageDestinationFinalize(destination) else { return nil }
-        return (data as Data, raster.pixelSize)
+        return data as Data
     }
 }

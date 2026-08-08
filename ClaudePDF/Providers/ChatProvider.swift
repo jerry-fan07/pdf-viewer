@@ -65,10 +65,36 @@ protocol ChatProvider: Sendable {
     var displayName: String { get }
     var capabilities: ProviderCapabilities { get }
 
+    /// The model this provider was built with, for the per-answer badge. Nil
+    /// where the app doesn't choose one — the subscription path answers on
+    /// whatever model the CLI is configured for.
+    var modelName: String? { get }
+
+    /// Per-token prices, for the per-answer cost line. Nil where there is no
+    /// per-token bill to show (the subscription path, the mock).
+    var pricing: TokenPricing? { get }
+
     /// Called once per opened document (upload / extract / prime a session).
     func attach(document: PDFDocumentInfo) async throws -> DocumentAttachment
+
+    /// Same, with a channel for a one-line status while a slow attach runs —
+    /// OCR over a scanned document is minutes, and silence there reads as a hang.
+    /// Providers whose attach is a single upload or prime inherit the default.
+    func attach(document: PDFDocumentInfo, progress: @escaping @Sendable (String) -> Void)
+        async throws -> DocumentAttachment
 
     /// One independent question; streams deltas back.
     func ask(_ question: Question, in attachment: DocumentAttachment)
         -> AsyncThrowingStream<ChatEvent, Error>
+}
+
+extension ChatProvider {
+    var modelName: String? { nil }
+    var pricing: TokenPricing? { nil }
+
+    func attach(document: PDFDocumentInfo, progress: @escaping @Sendable (String) -> Void)
+        async throws -> DocumentAttachment
+    {
+        try await attach(document: document)
+    }
 }
