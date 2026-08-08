@@ -61,6 +61,72 @@ enum PDFFixtures {
         makeDocument(origin: origin, rotation: rotation).page(at: 0)!
     }
 
+    /// A text-only document, one array of lines per page, drawn as real text so
+    /// `PDFPage.string` and `PDFPage.selection(for:)` have something to work with.
+    /// Line breaks are where the caller puts them — which is the point, since
+    /// re-wrapping is exactly what makes a model's quote fail to match the page.
+    static func makeTextDocument(pages: [[String]], pointSize: CGFloat = 12) -> PDFDocument {
+        let size = CGSize(width: 400, height: 300)
+        let data = NSMutableData()
+        let consumer = CGDataConsumer(data: data)!
+        var mediaBox = CGRect(origin: .zero, size: size)
+        let context = CGContext(consumer: consumer, mediaBox: &mediaBox, nil)!
+        let font = CTFontCreateWithName("Helvetica" as CFString, pointSize, nil)
+
+        for lines in pages {
+            context.beginPDFPage(nil)
+            context.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
+            context.fill(CGRect(origin: .zero, size: size))
+            var y = size.height - pointSize * 2
+            for line in lines {
+                let attributed = NSAttributedString(string: line, attributes: [.font: font])
+                context.textPosition = CGPoint(x: 30, y: y)
+                CTLineDraw(CTLineCreateWithAttributedString(attributed), context)
+                y -= pointSize * 1.6
+            }
+            context.endPDFPage()
+        }
+        context.closePDF()
+
+        let document = PDFDocument(data: data as Data)!
+        retained.append(document)
+        return document
+    }
+
+    /// A two-page paper, pre-wrapped at realistic line breaks, for anything that needs a
+    /// document that reads like one: the line breaks are the point, since a quotation of
+    /// a wrapped sentence is exactly what answer-to-source matching has to survive.
+    static func makePaperDocument() -> PDFDocument {
+        makeTextDocument(pages: paperPages, pointSize: 11)
+    }
+
+    static let paperPages: [[String]] = [
+        [
+            "Prefix Caching for Document-Grounded Question Answering",
+            "",
+            "Abstract. We study the economics of answering repeated questions",
+            "about a single long document. Prompt caching is a prefix match, so",
+            "the document must occupy a byte-identical prefix on every request.",
+            "",
+            "1. Introduction",
+            "",
+            "The failure mode is silent. If any byte of the prefix moves between",
+            "questions, the cache misses and the document is re-processed at full",
+            "price. Nothing in the response says so except the usage counters.",
+        ],
+        [
+            "2. Grounding the answer",
+            "",
+            "An answer that quotes the document should be checkable in one click.",
+            "We locate each quotation on the page and highlight it, which converts",
+            "an assertion into evidence the reader can see for themselves.",
+            "",
+            "We deliberately refuse approximate matches. A fuzzy match that",
+            "highlighted a merely similar sentence would invert the purpose of the",
+            "feature, since the highlight is the evidence.",
+        ],
+    ]
+
     /// Marker rect translated into absolute (unrotated) page space for a given box origin —
     /// the space `PDFView.convert(_:to: page)` speaks.
     static func inPageSpace(_ marker: CGRect, origin: CGPoint) -> CGRect {
