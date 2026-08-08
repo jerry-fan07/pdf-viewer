@@ -38,8 +38,10 @@ struct SettingsView: View {
                         Text(choice.displayName).tag(choice.rawValue)
                     }
                 }
-                Text("Applies to documents opened after the change — a document keeps the "
-                     + "provider it was attached with.")
+                Text("Applies immediately, to open documents as well as new ones — a window "
+                     + "re-prepares itself for the new provider, which costs one fresh cache "
+                     + "write on its next question. A window switched by hand from the chat "
+                     + "panel's picker keeps what it was given.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

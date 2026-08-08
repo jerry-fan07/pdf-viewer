@@ -46,6 +46,13 @@ struct DocumentWindow: View {
     @State private var pageField = "1"
     @FocusState private var searchFocused: Bool
 
+    // Watched so a change in Settings reaches documents that are already open.
+    @AppStorage(AppSettings.providerChoiceKey) private var providerChoice = ProviderChoice.automatic.rawValue
+    @AppStorage(AppSettings.anthropicModelKey) private var anthropicModel = AnthropicModel.opus5.rawValue
+    @AppStorage(AppSettings.claudeCodeEffortKey) private var claudeCodeEffort = ClaudeCodeEffort.cliDefault.rawValue
+    @AppStorage(AppSettings.deepseekModelKey) private var deepseekModel = DeepSeekModel.v4Flash.rawValue
+    @AppStorage(AppSettings.deepseekThinkingKey) private var deepseekThinking = DeepSeekThinking.low.rawValue
+
     var body: some View {
         HSplitView {
             if thumbnailsVisible {
@@ -81,6 +88,9 @@ struct DocumentWindow: View {
         .onAppear(perform: load)
         .onChange(of: viewer.currentPageNumber) { _, page in
             pageField = String(page)
+        }
+        .onChange(of: providerSettings) { _, _ in
+            applyProviderSettings()
         }
     }
 
@@ -235,52 +245,26 @@ struct DocumentWindow: View {
         else { return }
 
         chatVisible = true
-
-        // Capability-based degradation (PLAN.md §4): a text-only provider still
-        // gets the region's text when there is one.
-        guard !engine.capabilities.supportsVision else {
-            engine.composerNotice = nil
-            stage(crop)
-            return
-        }
-        if crop.fallbackText != nil {
-            engine.composerNotice =
-                "\(engine.providerName) can't see images — it will read the text inside this region."
-            stage(crop)
-            return
-        }
-
-        // No text layer under the region. Before calling it a dead end, try
-        // recognising the pixels — a figure's axis labels or a scanned table are
-        // exactly what OCR is for. Off the main actor: Vision on a crop is
-        // fast, but not free.
-        engine.pendingCrop = nil
-        guard AppSettings.ocrEnabled else {
-            engine.composerNotice =
-                "\(engine.providerName) can't see images — switch to Claude for visual questions."
-            return
-        }
-        engine.composerNotice = "Reading the text in this region…"
-        let png = crop.png
-        Task {
-            let recognised = await Task.detached(priority: .userInitiated) {
-                OCRExtractor.recognizeText(inPNG: png)
-            }.value
-            guard let recognised else {
-                engine.composerNotice = "\(engine.providerName) can't see images, and no text "
-                    + "could be recognised here — switch to Claude for visual questions."
-                return
-            }
-            engine.composerNotice = "\(engine.providerName) can't see images — it will read the "
-                + "text recognised inside this region."
-            stage(PendingCrop(png: png, pageNumber: crop.pageNumber, fallbackText: recognised))
-        }
+        // The capability-based degradation of PLAN.md §4 lives in the engine, which
+        // has to re-run it whenever the provider changes under a staged crop.
+        engine.stage(crop: crop, focusComposer: true)
     }
 
-    private func stage(_ crop: PendingCrop) {
-        engine.pendingCrop = crop
-        chatVisible = true
-        engine.requestComposerFocus()
+    // MARK: Settings, applied live
+
+    /// Everything in Settings that changes which provider — or which model —
+    /// answers. Collapsed into one value because `onChange` wants one.
+    private var providerSettings: String {
+        [providerChoice, anthropicModel, claudeCodeEffort, deepseekModel, deepseekThinking]
+            .joined(separator: "|")
+    }
+
+    private func applyProviderSettings() {
+        // A window whose provider was picked by hand keeps it: the Settings picker
+        // is the default for newly opened documents, not a remote control for
+        // windows the reader has already steered.
+        guard !engine.providerIsWindowOverride else { return }
+        engine.switchProvider(to: ProviderFactory.make())
     }
 
     // MARK: Loading
