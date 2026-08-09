@@ -22,7 +22,7 @@ Tests live in `Tests` and run against the app as their test host — no GUI auto
 
 ## Status
 
-All seven phases are done: the viewer, selection/crop, all three providers (Anthropic API, Claude subscription via the Claude Code CLI, DeepSeek), the polish pass — per-document history, per-answer cost, OCR for scanned pages, and an app icon — and live provider switching, with **265 unit tests**. The subscription path has been verified live; the two API paths are code-complete with their live cache-hit criteria still unverified (both need an API key).
+All seven phases are done: the viewer, selection/crop, all three providers (Anthropic API, Claude subscription via the Claude Code CLI, DeepSeek), the polish pass — per-document history, per-answer cost, OCR for scanned pages, and an app icon — and live provider switching, with **278 unit tests**. The subscription path has been verified live; the two API paths are code-complete with their live cache-hit criteria still unverified (both need an API key).
 
 Two things are deliberately not finished, both blocked on credentials rather than code: **notarization** (the Developer ID build is signed, hardened and verified — `Scripts/release.sh --notarize` submits and staples once `xcrun notarytool store-credentials` has run) and the **cache pre-warm knob**, which PLAN §7 asks to be verified against `claude-opus-5` before shipping. See the phase list in [PLAN.md](PLAN.md).
 
@@ -37,11 +37,21 @@ Each answer carries the provider and model that produced it, how much of its inp
 
 **Switching provider** — the provider capsule at the top of the chat panel is a menu: pick another one and the open document re-prepares itself for it, no reopening. The transcript stays, and each card goes on naming whoever answered it, so a switch reads as a change of voice rather than a reset. Switching costs one fresh cache write on the next question; switching *back* to a provider this document is already prepared for is free. A change in Settings applies to open windows too — except to a window you have switched by hand, which keeps what you gave it. A region crop staged for Claude is re-read as text (or recognised with OCR) if you switch to a text-only provider. Preparing a large scanned document can be cancelled from the status line, and retried.
 
-**Shortcuts:** ⌘F find (⌘G / ⇧⌘G next and previous, Esc clears) · ⌘L ask about the selection · ⇧⌘A region crop · ⇧⌘D dark pages · ⌥⌘I chat panel · ⌃⌘S thumbnails · ⌘− / ⌘0 / ⌘= zoom.
+**Shortcuts:** ⌘F find (⌘G / ⇧⌘G next and previous, Esc clears) · ⌘L ask about the selection · ⇧⌘A region crop · ⇧⌘D dark mode · ⌥⌘I chat panel · ⌃⌘S thumbnails · ⌘− / ⌘0 / ⌘= zoom.
 
 ## Dark mode
 
-The chrome has always followed the system; **the pages do too** ([screenshot](docs/dark-mode.png)). ⇧⌘D toggles it, and *Settings → Appearance* chooses between *Match system*, *Always light*, and *Always dark* — the toolbar toggle picks a side explicitly, so a document you have darkened by hand does not flip back at sunrise. Thumbnails follow the pages.
+**One switch moves a whole window** — toolbar, thumbnails, chat panel and the pages themselves ([screenshot](docs/dark-mode.png)). ⇧⌘D toggles it (a crescent moon in the toolbar, lit when it is on), and *Settings → Appearance* chooses what windows open as: *Match system*, *Always light*, or *Always dark*.
+
+The toggle is **scoped to the window it is pressed in** — the same rule the provider picker follows. Darkening the paper you are reading at night does not reach across to the document on the other display, and Settings is the default a window starts from rather than a remote control for windows you have already steered. It also picks a side explicitly rather than returning to *Match system*, so a window you darkened by hand does not flip back at sunrise. That is also why the window override is applied with `preferredColorScheme` rather than `NSApp.appearance`: the latter is app-wide by construction.
+
+*Match system* is the one mode that forces nothing, and it has to be — the window's colour scheme is where the page filter reads the system's answer from, so forcing it would make the answer its own input and a window dark once would never come back.
+
+Chrome and pages were separate settings before, on the theory that a dark toolbar around white paper is the normal night-reading case. It isn't — it is a half-dark window. The cost of collapsing them is that *Always light* is now light everywhere, including at night: dark chrome around a light page is no longer reachable.
+
+**The switch crosses rather than snaps.** A full page of paper going near-black in one frame is a flashbulb in reverse, so ⇧⌘D sweeps over 0.35s on a smoothstep curve — the pages and the thumbnail strip together ([the frames, at even progress](docs/dark-mode-sweep.png)). The filter chain takes a `progress` and scales towards the identity at 0, and a timer steps it per frame: the matrix rides in `CIVector`s, which Core Animation will not interpolate, so a `CABasicAnimation` on the filter's key paths would animate the hue angle alone and swing the colours around an un-inverted page. Only a switch made while the window is on screen sweeps — a window *opening* dark shows a dark page rather than fading one down from white. The toolbar and panels still change in one step, because `preferredColorScheme` is not an animatable property; the pages are what the eye was objecting to.
+
+**A sunset takes longer than a keypress** — 0.6s against 0.35s. A pressed key wants its result promptly, since you asked and a slow answer reads as lag; a window going dark under a reader who didn't ask is the opposite case, and the eye is on the page rather than the toolbar while it happens. The two are told apart by whether the window was on *Match system* both before and after the change: that is the only way the pages can move without anybody touching the app. Both halves of that test matter — ⇧⌘D fails it because the toggle picks a side rather than following, and choosing *Match system* in Settings from *Always light* at night fails it because it is a decision just made, not a sunset.
 
 Pages are inverted with a Core Image filter on the view layer, not by overriding `PDFPage.draw`: `CropRenderer` draws through that same call, so an override would invert every region screenshot on its way to a provider. So a **crop is always sent — and shown in its chat card — as the document authored it**, light background and all, even while you are reading dark. The model gets the original; only the screen changes.
 
