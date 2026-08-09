@@ -127,7 +127,9 @@ enum LaTeXNormalizer {
         ("\\lVert", "\\|"), ("\\rVert", "\\|"), ("\\lvert", "|"), ("\\rvert", "|"),
         ("\\argmin", "\\arg\\min"), ("\\argmax", "\\arg\\max"),
         ("\\dots", "\\ldots"), ("\\dotsc", "\\ldots"), ("\\dotsb", "\\cdots"),
-        ("\\thinspace", "\\,"), ("\\lparen", "("), ("\\rparen", ")"),
+        ("\\lparen", "("), ("\\rparen", ")"),
+        // No `\thinspace` → `\,` alias: this pass runs *after* `droppedCommands`, so an
+        // alias that produces an explicit space would re-manufacture the atom dropped there.
     ]
 
     /// Commands whose braced argument has to go with them — dropping only the name would
@@ -135,7 +137,8 @@ enum LaTeXNormalizer {
     /// *second* argument, which is what makes it degrade to a plain `=` rather than vanish.
     private static let rewrittenWithArgument: [(from: String, to: String)] = [
         ("\\label", ""), ("\\tag*", ""), ("\\tag", ""), ("\\phantom", ""),
-        ("\\hspace*", "\\;"), ("\\hspace", "\\;"), ("\\vspace*", ""), ("\\vspace", ""),
+        // `\hspace` becomes nothing rather than `\;`: explicit spaces are the trap below.
+        ("\\hspace*", ""), ("\\hspace", ""), ("\\vspace*", ""), ("\\vspace", ""),
         ("\\xrightarrow", "\\to"), ("\\xleftarrow", "\\leftarrow"),
         ("\\stackrel", ""), ("\\overset", ""), ("\\underset", ""),
     ]
@@ -147,6 +150,21 @@ enum LaTeXNormalizer {
         "\\limits", "\\nolimits", "\\!", "\\substack", "\\mathop",
         "\\bigl", "\\bigr", "\\Bigl", "\\Bigr", "\\biggl", "\\biggr", "\\Biggl", "\\Biggr",
         "\\bigg", "\\Bigg", "\\big", "\\Big",
+        // Explicit spaces, dropped rather than passed through, because SwiftMath 1.7.3 traps
+        // on them. Its `MTMathList.finalized` treats a space atom as the previous atom when
+        // deciding whether a `-` is a sign or a subtraction, but the typesetter skips spaces
+        // without advancing *its* previous atom. So `= \, -y` reaches the spacing table as
+        // (relation, binary operator), which is an `.invalid` pair: an assertion failure in
+        // Debug — SIGTRAP, taking the app or the test process with it — and silently zero
+        // spacing in Release. Models emit `\quad -x` and `= \, -1` freely, so this is not a
+        // rare shape. The lost space is cosmetic and SwiftMath re-derives most of it from the
+        // glyph classes anyway; the trap is not. `docs/swiftmath-finalized-space-fix.diff` is
+        // the upstream fix, which is what to vendor if the exact spacing is ever wanted.
+        "\\,", "\\;", "\\>", "\\quad", "\\qquad",
+        // These are spaces in real LaTeX but no command at all in SwiftMath, so leaving them
+        // in fails the whole equation to raw source rather than costing a space. (Aliasing
+        // `\thinspace` to `\,` — what used to happen — would re-manufacture the trap above.)
+        "\\:", "\\thinspace", "\\enspace",
     ]
 
     static func normalize(_ latex: String) -> String {

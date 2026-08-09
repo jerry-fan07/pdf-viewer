@@ -106,4 +106,37 @@ final class MathRendererTests: XCTestCase {
         """
         XCTAssertNotNil(render(latex, display: true))
     }
+
+    /// Explicit spaces are dropped, not passed through, because SwiftMath 1.7.3 trips its own
+    /// assertion on a space sitting between a relation (or operator, or open bracket) and a
+    /// `-` it has failed to reclassify as a sign. In Debug that is a SIGTRAP, so a regression
+    /// here does not fail this test — it takes the whole test process down with it. That is
+    /// the signal; `XCTAssertNotNil` is only what proves the equation still typesets after.
+    func testExplicitSpacesBeforeASignDoNotTrapTheTypesetter() throws {
+        for space in ["\\,", "\\;", "\\>", "\\!", "\\:", "\\quad", "\\qquad",
+                      "\\thinspace", "\\enspace", "\\hspace{1em}"] {
+            XCTAssertNotNil(render("x = \(space) -y"), "failed on \(space)")
+        }
+        // The same hole, reached from each of the other atom classes the spacing table
+        // leaves undefined next to a binary operator.
+        XCTAssertNotNil(render("x + \\, -y"))
+        XCTAssertNotNil(render("x , \\, -y"))
+        XCTAssertNotNil(render("( \\, -y )"))
+        XCTAssertNotNil(render("\\sum \\, -y"))
+        // ...and with the binary operator on the left instead.
+        XCTAssertNotNil(render("x + \\, = y"))
+        XCTAssertNotNil(render("x + \\, )"))
+        // Shapes a model actually emits.
+        XCTAssertNotNil(render("E = \\, -mc^2"))
+        XCTAssertNotNil(render("\\Delta S \\geq \\quad -\\frac{Q}{T}", display: true))
+        XCTAssertNotNil(render("\\begin{aligned} y &= x \\\\ &\\quad -z \\end{aligned}", display: true))
+    }
+
+    /// The drop has to respect the same command-name boundary rule as the alias pass, or
+    /// `\quad` takes `\quadrature` with it.
+    func testSpaceDropsDoNotEatLongerCommandNames() {
+        XCTAssertEqual(LaTeXNormalizer.normalize("\\quadrature \\thinspaces"), "\\quadrature \\thinspaces")
+        XCTAssertFalse(LaTeXNormalizer.normalize("a \\quad b").contains("\\quad"))
+        XCTAssertFalse(LaTeXNormalizer.normalize("x = \\hspace{1em} y").contains("\\hspace"))
+    }
 }
