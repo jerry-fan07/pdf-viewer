@@ -182,7 +182,7 @@ final class DeepSeekTests: XCTestCase {
         )
         XCTAssertEqual(body.model, "deepseek-v4-pro")
         XCTAssertTrue(body.stream)
-        XCTAssertEqual(body.maxTokens, DeepSeekRequestBuilder.maxTokens)
+        XCTAssertEqual(body.maxTokens, DeepSeekRequestBuilder.maxTokens(for: .low))
         XCTAssertEqual(body.messages.count, 2, "each question is an independent conversation")
 
         let json = try XCTUnwrap(String(data: try DeepSeekRequestBuilder.encoder().encode(body),
@@ -203,6 +203,22 @@ final class DeepSeekTests: XCTestCase {
                                         encoding: .utf8))
         XCTAssertTrue(json.contains("\"thinking\":{\"type\":\"disabled\"}"), json)
         XCTAssertFalse(json.contains("reasoning_effort"), json)
+    }
+
+    /// Reasoning spends the same budget as the answer, so more effort has to buy
+    /// more room — otherwise the thinking eats the answer and the reader gets a
+    /// sentence that stops mid-word.
+    func testOutputBudgetGrowsWithThinkingEffort() {
+        let budgets = DeepSeekThinking.allCases.map(DeepSeekRequestBuilder.maxTokens(for:))
+        XCTAssertEqual(budgets, budgets.sorted(), "budget must not shrink as effort rises")
+        XCTAssertGreaterThanOrEqual(DeepSeekRequestBuilder.maxTokens(for: .off), 16_000)
+        XCTAssertGreaterThan(DeepSeekRequestBuilder.maxTokens(for: .low),
+                             DeepSeekRequestBuilder.maxTokens(for: .off),
+                             "thinking has to be paid for out of somewhere")
+        for thinking in DeepSeekThinking.allCases {
+            XCTAssertLessThanOrEqual(DeepSeekRequestBuilder.maxTokens(for: thinking), 384_000,
+                                     "the models cap output at 384K")
+        }
     }
 
     func testRetiredModelAliasesAreNotOffered() {
