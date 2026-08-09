@@ -143,6 +143,8 @@ enum LaTeXNormalizer {
         // print the opposite of what the answer says. Those still fall back to source.
         // Macros a paper defines for itself and then uses in the prose a model quotes back.
         ("\\tr", "\\mathrm{tr}"), ("\\rank", "\\mathrm{rank}"), ("\\diag", "\\mathrm{diag}"),
+        // No `\thinspace` → `\,` alias: this pass runs *after* `droppedCommands`, so an
+        // alias that produces an explicit space would re-manufacture the atom dropped there.
     ]
 
     /// Commands whose braced argument has to go with them — dropping only the name would
@@ -174,15 +176,16 @@ enum LaTeXNormalizer {
         // deciding whether a `-` is a sign or a subtraction, but the typesetter skips spaces
         // without advancing *its* previous atom. So `= \, -y` reaches the spacing table as
         // (relation, binary operator), which is an `.invalid` pair: an assertion failure in
-        // Debug — it takes the test process down with SIGTRAP — and silently zero spacing in
-        // Release. Models emit `\quad -x` and `= \, -1` freely, so this is not a rare shape.
-        // The lost space is cosmetic and SwiftMath re-derives most of it from the glyph
-        // classes anyway; the trap is not. See .context/swiftmath-finalized-space-fix.diff
-        // for the upstream fix, which is what to vendor if the exact spacing is ever wanted.
-        "\\,", "\\;", "\\>", "\\quad", "\\qquad", "\\thinspace", "\\enspace",
-        // `\:` is a medium space in real LaTeX but no command at all in SwiftMath, so leaving
-        // it in fails the whole equation to raw source rather than costing a space.
-        "\\:",
+        // Debug — SIGTRAP, taking the app or the test process with it — and silently zero
+        // spacing in Release. Models emit `\quad -x` and `= \, -1` freely, so this is not a
+        // rare shape. The lost space is cosmetic and SwiftMath re-derives most of it from the
+        // glyph classes anyway; the trap is not. `docs/swiftmath-finalized-space-fix.diff` is
+        // the upstream fix, which is what to vendor if the exact spacing is ever wanted.
+        "\\,", "\\;", "\\>", "\\quad", "\\qquad",
+        // These are spaces in real LaTeX but no command at all in SwiftMath, so leaving them
+        // in fails the whole equation to raw source rather than costing a space. (Aliasing
+        // `\thinspace` to `\,` — what used to happen — would re-manufacture the trap above.)
+        "\\:", "\\thinspace", "\\enspace",
     ]
 
     static func normalize(_ latex: String) -> String {

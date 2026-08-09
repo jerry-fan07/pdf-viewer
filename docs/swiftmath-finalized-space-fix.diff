@@ -1,0 +1,53 @@
+--- a/Sources/SwiftMath/MathRender/MTMathList.swift	2026-08-08 22:41:47
++++ b/Sources/SwiftMath/MathRender/MTMathList.swift	2026-08-08 22:43:05
+@@ -902,22 +902,30 @@
+         let zeroRange = NSMakeRange(0, 0)
+         
+         var prevNode: MTMathAtom? = nil
++        // The predecessor for atom-*class* rules, which is not always the adjacent atom:
++        // `createDisplayAtoms` skips space and style atoms without advancing its own
++        // prevNode, so for spacing purposes they are transparent. Tracking them here too
++        // would leave the binary operator in `= \, -y` unreclassified, and the typesetter
++        // would then look up the (relation, binary) pair — which is `.invalid`.
++        // `prevNode` stays the adjacent atom: it carries index-range accounting and number
++        // fusing, where a space genuinely does separate its neighbours.
++        var prevClassNode: MTMathAtom? = nil
+         for atom in self.atoms {
+             let newNode = atom.finalized
+-            
++
+             if NSEqualRanges(zeroRange, atom.indexRange) {
+                 let index = prevNode == nil ? 0 : prevNode!.indexRange.location + prevNode!.indexRange.length
+                 newNode.indexRange = NSMakeRange(index, 1)
+             }
+-            
++
+             switch newNode.type {
+             case .binaryOperator:
+-                if isNotBinaryOperator(prevNode)  {
++                if isNotBinaryOperator(prevClassNode)  {
+                     newNode.type = .unaryOperator
+                 }
+             case .relation, .punctuation, .close:
+-                if prevNode != nil && prevNode!.type == .binaryOperator {
+-                    prevNode!.type = .unaryOperator
++                if prevClassNode != nil && prevClassNode!.type == .binaryOperator {
++                    prevClassNode!.type = .unaryOperator
+                 }
+             case .number:
+                 if prevNode != nil && prevNode!.type == .number && prevNode!.subScript == nil && prevNode!.superScript == nil {
+@@ -928,9 +936,12 @@
+             }
+             finalizedList.add(newNode)
+             prevNode = newNode
++            if newNode.type != .space && newNode.type != .style {
++                prevClassNode = newNode
++            }
+         }
+-        if prevNode != nil && prevNode!.type == .binaryOperator {
+-            prevNode!.type = .unaryOperator
++        if prevClassNode != nil && prevClassNode!.type == .binaryOperator {
++            prevClassNode!.type = .unaryOperator
+         }
+         return finalizedList
+     }
