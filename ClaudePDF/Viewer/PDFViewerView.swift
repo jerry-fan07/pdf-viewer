@@ -265,12 +265,15 @@ struct PDFKitView: NSViewRepresentable {
     let document: PDFDocument
     let controller: PDFViewerController
     var darkPages = false
+    /// Not what the pages do — how they came to be asked. *Match system* is the one mode that
+    /// can change them without anybody touching the app, and that change is paced differently.
+    var followsSystem = false
     var onAskAboutSelection: (() -> Void)? = nil
 
-    /// Holds the light-mode background so turning dark pages back off restores PDFKit's own
-    /// colour — by then `backgroundColor` is the pre-inversion grey, not the original.
+    /// Holds the sweep between light and dark pages. It outlives any one `updateNSView`, which
+    /// is the point: that is where a switch arrives, and the switch takes a third of a second.
     final class Coordinator {
-        var lightBackground: NSColor?
+        var darkening: PDFDarkeningAnimator?
     }
 
     func makeCoordinator() -> Coordinator { Coordinator() }
@@ -282,8 +285,16 @@ struct PDFKitView: NSViewRepresentable {
         view.displaysPageBreaks = false
         view.document = document
         view.onAskAboutSelection = onAskAboutSelection
-        context.coordinator.lightBackground = view.backgroundColor
-        PDFPageDarkening.apply(dark: darkPages, to: view, lightBackground: view.backgroundColor)
+        // Captured now, and by value: once the filter is on, `backgroundColor` is the
+        // pre-inversion grey, so this is the only chance to learn PDFKit's own light colour.
+        let lightBackground = view.backgroundColor
+        context.coordinator.darkening = PDFDarkeningAnimator { [weak view] progress in
+            guard let view else { return }
+            PDFPageDarkening.apply(progress: progress, to: view, lightBackground: lightBackground)
+        }
+        // Not animated: a window opening under a dark system shows a dark page, it does not
+        // flash the paper white and fade it down.
+        context.coordinator.darkening?.set(dark: darkPages, followingSystem: followsSystem, animated: false)
         controller.setDarkPages(darkPages)
         // Defer: attach() publishes state, which must not happen during view construction.
         DispatchQueue.main.async { controller.attach(view: view) }
@@ -292,11 +303,7 @@ struct PDFKitView: NSViewRepresentable {
 
     func updateNSView(_ nsView: PDFView, context: Context) {
         (nsView as? AskablePDFView)?.onAskAboutSelection = onAskAboutSelection
-        PDFPageDarkening.apply(
-            dark: darkPages,
-            to: nsView,
-            lightBackground: context.coordinator.lightBackground ?? nsView.backgroundColor
-        )
+        context.coordinator.darkening?.set(dark: darkPages, followingSystem: followsSystem, animated: true)
         controller.setDarkPages(darkPages)
         if nsView.document !== document {
             nsView.document = document
@@ -309,17 +316,31 @@ struct PDFKitView: NSViewRepresentable {
 struct PDFThumbnailSidebar: NSViewRepresentable {
     @ObservedObject var controller: PDFViewerController
     var darkPages = false
+    var followsSystem = false
+
+    /// Its own animator, fed the same two inputs as the pages' so it picks the same duration and
+    /// curve: the strip is right next to them, and a sidebar crossing on its own schedule would
+    /// read as a stutter.
+    final class Coordinator {
+        var darkening: PDFDarkeningAnimator?
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
 
     func makeNSView(context: Context) -> PDFThumbnailView {
         let view = PDFThumbnailView()
         view.thumbnailSize = CGSize(width: 96, height: 128)
         view.backgroundColor = .clear
-        PDFPageDarkening.apply(dark: darkPages, to: view)
+        context.coordinator.darkening = PDFDarkeningAnimator { [weak view] progress in
+            guard let view else { return }
+            PDFPageDarkening.apply(progress: progress, to: view)
+        }
+        context.coordinator.darkening?.set(dark: darkPages, followingSystem: followsSystem, animated: false)
         return view
     }
 
     func updateNSView(_ nsView: PDFThumbnailView, context: Context) {
-        PDFPageDarkening.apply(dark: darkPages, to: nsView)
+        context.coordinator.darkening?.set(dark: darkPages, followingSystem: followsSystem, animated: true)
         // controller.viewReady flips after the PDFView attaches, re-running this update.
         if nsView.pdfView !== controller.pdfView {
             nsView.pdfView = controller.pdfView

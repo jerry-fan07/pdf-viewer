@@ -3,7 +3,7 @@ import SwiftUI
 struct SettingsView: View {
     @State private var anthropicKey = ""
     @State private var deepseekKey = ""
-    @AppStorage(AppSettings.pdfAppearanceKey) private var pdfAppearance = PDFAppearanceMode.matchSystem.rawValue
+    @AppStorage(AppSettings.appearanceKey) private var appearance = AppearanceMode.matchSystem.rawValue
     @AppStorage(AppSettings.providerChoiceKey) private var providerChoice = ProviderChoice.automatic.rawValue
     @AppStorage(AppSettings.anthropicModelKey) private var anthropicModel = AnthropicModel.opus5.rawValue
     @AppStorage(AppSettings.claudeCodeEffortKey) private var claudeCodeEffort = ClaudeCodeEffort.cliDefault.rawValue
@@ -34,14 +34,17 @@ struct SettingsView: View {
     var body: some View {
         Form {
             Section("Appearance") {
-                Picker("PDF pages", selection: $pdfAppearance) {
-                    ForEach(PDFAppearanceMode.allCases) { mode in
+                Picker("Appearance", selection: $appearance) {
+                    ForEach(AppearanceMode.allCases) { mode in
                         Text(mode.displayName).tag(mode.rawValue)
                     }
                 }
-                Text("Dark pages invert the document on screen, keeping colours at their own "
-                     + "hue. The document itself is untouched: a region screenshot still "
-                     + "reaches the provider the way the PDF was authored. ⇧⌘D toggles it.")
+                Text("Dark mode darkens a whole window — toolbar, panels and pages together — "
+                     + "and this is what every window starts as. ⇧⌘D darkens just the window "
+                     + "in front of you, which then keeps what you gave it. Pages are inverted "
+                     + "on screen, keeping colours at their own hue; the document itself is "
+                     + "untouched, so a region screenshot still reaches the provider the way "
+                     + "the PDF was authored.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -127,6 +130,9 @@ struct SettingsView: View {
         .formStyle(.grouped)
         .frame(width: 460)
         .padding(.vertical, 8)
+        // Its own scene, so it needs the preference applied too — otherwise Settings is the
+        // one window still following the system while every document window is dark.
+        .preferredColorScheme(AppearanceMode(rawValue: appearance)?.preferredColorScheme)
         .onAppear {
             anthropicKey = KeychainStore.get(.anthropicAPIKey) ?? ""
             deepseekKey = KeychainStore.get(.deepseekAPIKey) ?? ""

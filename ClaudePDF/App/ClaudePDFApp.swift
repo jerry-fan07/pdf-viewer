@@ -53,20 +53,38 @@ struct DocumentWindow: View {
     @AppStorage(AppSettings.deepseekModelKey) private var deepseekModel = DeepSeekModel.v4Flash.rawValue
     @AppStorage(AppSettings.deepseekThinkingKey) private var deepseekThinking = DeepSeekThinking.low.rawValue
 
-    // Same story for the page appearance, but it is resolved against the window's own
-    // colour scheme rather than pushed at the engine.
-    @AppStorage(AppSettings.pdfAppearanceKey)
-    private var pdfAppearance = PDFAppearanceMode.matchSystem.rawValue
+    // Same story for the appearance — Settings is the default every window starts from —
+    // except that it is resolved against the window's own colour scheme rather than pushed
+    // at the engine, and a window can be steered away from it by hand.
+    @AppStorage(AppSettings.appearanceKey)
+    private var appearance = AppearanceMode.matchSystem.rawValue
     @Environment(\.colorScheme) private var colorScheme
 
+    /// Set by ⇧⌘D and the toolbar's moon, and scoped to this window: darkening the document
+    /// you are reading at night must not reach across to the one on the other display.
+    /// `nil` means "still following Settings", which is why this is an optional rather than
+    /// a copy of the stored mode — a copy could not tell the two apart.
+    @State private var appearanceOverride: AppearanceMode?
+
+    private var appearanceMode: AppearanceMode {
+        appearanceOverride ?? AppearanceMode(rawValue: appearance) ?? .matchSystem
+    }
+
     private var darkPages: Bool {
-        (PDFAppearanceMode(rawValue: pdfAppearance) ?? .matchSystem).darkPages(system: colorScheme)
+        appearanceMode.darkPages(system: colorScheme)
+    }
+
+    /// Handed down alongside `darkPages` so the sweep can tell a sunset from a keypress: on
+    /// *Match system* the pages can change without anybody touching the app, and that is the
+    /// case that gets the longer crossing.
+    private var followsSystem: Bool {
+        appearanceMode == .matchSystem
     }
 
     var body: some View {
         HSplitView {
             if thumbnailsVisible {
-                PDFThumbnailSidebar(controller: viewer, darkPages: darkPages)
+                PDFThumbnailSidebar(controller: viewer, darkPages: darkPages, followsSystem: followsSystem)
                     .frame(width: 150)
             }
 
@@ -77,6 +95,7 @@ struct DocumentWindow: View {
                             document: pdf,
                             controller: viewer,
                             darkPages: darkPages,
+                            followsSystem: followsSystem,
                             onAskAboutSelection: captureSelection
                         )
                         if cropMode {
@@ -94,6 +113,10 @@ struct DocumentWindow: View {
                     .frame(minWidth: 300, idealWidth: 360, maxWidth: 900)
             }
         }
+        // The whole window, not just the pages: toolbar, sidebar and chat panel go dark
+        // together. Applied here rather than to `NSApp.appearance` precisely because it is
+        // per-window. `matchSystem` resolves to nil on purpose — see `AppearanceMode`.
+        .preferredColorScheme(appearanceMode.preferredColorScheme)
         .toolbar { toolbarContent }
         .background(hiddenShortcuts)
         .onAppear(perform: load)
@@ -153,12 +176,14 @@ struct DocumentWindow: View {
             .keyboardShortcut("a", modifiers: [.command, .shift])
             .help("Drag to screenshot a region and ask about it (⇧⌘A)")
 
-            Toggle(isOn: darkPagesBinding) {
-                Label("Dark Pages", systemImage: darkPages ? "moon.fill" : "sun.max")
+            // One moon in both states: the button style already fills in when it is on, and a
+            // sun that appears only while the app is light is a second, redundant signal.
+            Toggle(isOn: darkModeBinding) {
+                Label("Dark Mode", systemImage: "moon.fill")
             }
             .toggleStyle(.button)
             .keyboardShortcut("d", modifiers: [.command, .shift])
-            .help("Render the document dark (⇧⌘D) — set it back to follow the system in Settings")
+            .help("Darken this window (⇧⌘D) — Settings sets the default for other windows")
 
             Button {
                 chatVisible.toggle()
@@ -171,12 +196,14 @@ struct DocumentWindow: View {
         }
     }
 
-    /// Toggling picks a side explicitly: once you have overruled the system for this document,
-    /// following it again would flip the page out from under you at sunset.
-    private var darkPagesBinding: Binding<Bool> {
+    /// Toggling steers this window and nothing else, and it picks a side explicitly rather
+    /// than going back to `matchSystem`: once you have overruled the system for this document,
+    /// following it again would flip the window out from under you at sunset. Same rule the
+    /// provider picker follows — Settings is the default, not a remote control.
+    private var darkModeBinding: Binding<Bool> {
         Binding(
             get: { darkPages },
-            set: { pdfAppearance = ($0 ? PDFAppearanceMode.dark : .light).rawValue }
+            set: { appearanceOverride = $0 ? .dark : .light }
         )
     }
 
