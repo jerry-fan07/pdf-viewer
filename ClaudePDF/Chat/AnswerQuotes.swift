@@ -11,10 +11,20 @@ struct AnswerChunk: Equatable {
 /// Picks the quoted passages out of an answer so each can be turned into a link back
 /// to the page it came from.
 ///
-/// This is the fourth layer of the answer pipeline, and like the three above it, it
-/// only ever sees what it understands: `MarkdownBlocks` has already taken fenced code
-/// away, `LaTeXSegmenter` has taken the math, so what arrives here is prose in which a
-/// `"` is a quotation mark rather than a string literal or a TeX unit.
+/// Two callers, and they hand it different things on purpose:
+///   • `InlineRuns`, drawing a paragraph, passes the *parsed* text of one inline run —
+///     Markdown already applied, code spans blanked out — so what a link goes hunting
+///     for on the page is the words as they read, not the asterisks around them. That
+///     is also the only order that works: Markdown is one pass over the whole run, so
+///     a quotation cannot be cut out of the source before it.
+///   • `ChatPanelView`, listing an answer's jump-to-source chips, passes the raw answer,
+///     because it only needs to know *whether* the answer quotes anything and roughly
+///     what. A chip for a quotation carrying markup therefore still hunts the markup;
+///     the inline link beside it is the one that finds the passage.
+///
+/// Either way the layers above have taken away what would confuse it: `MarkdownBlocks`
+/// has taken fenced code, `LaTeXSegmenter` the math. A `"` that arrives here is a
+/// quotation mark rather than a string literal or a TeX unit.
 ///
 /// The rules are conservative on purpose — a link that highlights the wrong thing is
 /// worse than prose that isn't linked:
