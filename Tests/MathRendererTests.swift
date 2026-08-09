@@ -73,6 +73,41 @@ final class MathRendererTests: XCTestCase {
         }
     }
 
+    /// The second sweep, from an answer that came back with `W^\natural` drawn as source in
+    /// the middle of a sentence: everything below was checked to fail against SwiftMath
+    /// 1.7.3 and now has an alias. Each is wrapped in ordinary terms because a run that
+    /// typesets to *nothing* — a lone `\,` — is reported as a failure by its size.
+    func testTheSecondSweepOfCommandsSwiftMathRejects() {
+        for latex in ["X^\\intercal", "\\mbox{s.t.}", "a \\coloneqq b", "a \\eqqcolon b",
+                      "a \\triangleq b", "\\tr(A)", "\\rank(A)", "\\diag(\\lambda)",
+                      "\\overbrace{x + y}", "\\underbrace{x + y}_{z}", "\\cfrac{1}{2}",
+                      "\\nicefrac{1}{2}", "\\sfrac{1}{2}", "a \\enspace b", "\\varnothing",
+                      "a \\lesssim b", "a \\gtrsim b", "A \\subsetneq B", "\\blacksquare",
+                      "\\mathds{R}", "\\Bbb{R}", "\\left( a \\middle| b \\right)",
+                      "\\smash{z}", "\\mathpunct{,}", "\\mathrel{=}", "\\mathbin{\\ast}",
+                      "\\begin{array}{cc} a & b \\\\ c & d \\end{array}",
+                      "\\begin{smallmatrix} a & b \\end{smallmatrix}"] {
+            XCTAssertNotNil(render("z \(latex) w", display: true), "failed to typeset \(latex)")
+        }
+    }
+
+    /// `array` is the one environment that carries an argument. The column spec has no
+    /// SwiftMath syntax at all, so it has to be dropped rather than renamed — left in, it
+    /// typesets as a first cell reading "cc".
+    func testArrayLosesItsColumnSpecAndKeepsItsCells() {
+        XCTAssertEqual(
+            LaTeXNormalizer.normalize("\\begin{array}{c|c} a & b \\end{array}"),
+            "\\begin{matrix} a & b \\end{matrix}"
+        )
+    }
+
+    /// A negation has no honest near miss: printing `\mid` for `\nmid` would say the
+    /// opposite of the answer, so these are left to fall back to source on purpose.
+    func testNegationsAreLeftToFallBackRatherThanInverted() {
+        XCTAssertNil(render("a \\nmid b", display: true))
+        XCTAssertNil(render("A \\nsubseteq B", display: true))
+    }
+
     /// The alias pass has to respect TeX's own rule that a command name ends at the first
     /// non-letter. A plain textual swap of `\big` would turn `\bigcup` into a stray `cup`.
     func testAliasesDoNotEatLongerCommandNames() throws {
@@ -105,5 +140,38 @@ final class MathRendererTests: XCTestCase {
         \\end{equation}
         """
         XCTAssertNotNil(render(latex, display: true))
+    }
+
+    /// Explicit spaces are dropped, not passed through, because SwiftMath 1.7.3 trips its own
+    /// assertion on a space sitting between a relation (or operator, or open bracket) and a
+    /// `-` it has failed to reclassify as a sign. In Debug that is a SIGTRAP, so a regression
+    /// here does not fail this test — it takes the whole test process down with it. That is
+    /// the signal; `XCTAssertNotNil` is only what proves the equation still typesets after.
+    func testExplicitSpacesBeforeASignDoNotTrapTheTypesetter() throws {
+        for space in ["\\,", "\\;", "\\>", "\\!", "\\:", "\\quad", "\\qquad",
+                      "\\thinspace", "\\enspace", "\\hspace{1em}"] {
+            XCTAssertNotNil(render("x = \(space) -y"), "failed on \(space)")
+        }
+        // The same hole, reached from each of the other atom classes the spacing table
+        // leaves undefined next to a binary operator.
+        XCTAssertNotNil(render("x + \\, -y"))
+        XCTAssertNotNil(render("x , \\, -y"))
+        XCTAssertNotNil(render("( \\, -y )"))
+        XCTAssertNotNil(render("\\sum \\, -y"))
+        // ...and with the binary operator on the left instead.
+        XCTAssertNotNil(render("x + \\, = y"))
+        XCTAssertNotNil(render("x + \\, )"))
+        // Shapes a model actually emits.
+        XCTAssertNotNil(render("E = \\, -mc^2"))
+        XCTAssertNotNil(render("\\Delta S \\geq \\quad -\\frac{Q}{T}", display: true))
+        XCTAssertNotNil(render("\\begin{aligned} y &= x \\\\ &\\quad -z \\end{aligned}", display: true))
+    }
+
+    /// The drop has to respect the same command-name boundary rule as the alias pass, or
+    /// `\quad` takes `\quadrature` with it.
+    func testSpaceDropsDoNotEatLongerCommandNames() {
+        XCTAssertEqual(LaTeXNormalizer.normalize("\\quadrature \\thinspaces"), "\\quadrature \\thinspaces")
+        XCTAssertFalse(LaTeXNormalizer.normalize("a \\quad b").contains("\\quad"))
+        XCTAssertFalse(LaTeXNormalizer.normalize("x = \\hspace{1em} y").contains("\\hspace"))
     }
 }

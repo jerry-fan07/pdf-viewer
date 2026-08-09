@@ -35,11 +35,38 @@ final class UISnapshots: XCTestCase {
         try png.write(to: directory.appendingPathComponent(name))
     }
 
+    /// Through a real `NSHostingView` in an offscreen window, not `ImageRenderer`:
+    /// the renderer skips `ScrollView` content and draws AppKit-backed controls
+    /// (menus, text fields) as placeholder blanks, which blinded these shots to
+    /// the entire transcript. An appearance can be forced per shot — dynamic
+    /// colours resolve against the window they are drawn in.
     @MainActor
-    private func render<V: View>(_ view: V, width: CGFloat, height: CGFloat) -> NSImage? {
-        let renderer = ImageRenderer(content: view.frame(width: width, height: height))
-        renderer.scale = 2
-        return renderer.nsImage
+    private func render<V: View>(
+        _ view: V, width: CGFloat, height: CGFloat,
+        appearance: NSAppearance.Name = .aqua
+    ) -> NSImage? {
+        let host = NSHostingView(rootView: view.frame(width: width, height: height))
+        host.frame = CGRect(x: 0, y: 0, width: width, height: height)
+        let window = NSWindow(
+            contentRect: host.frame, styleMask: .borderless, backing: .buffered, defer: false
+        )
+        window.appearance = NSAppearance(named: appearance)
+        window.contentView = host
+        host.layoutSubtreeIfNeeded()
+
+        let scale: CGFloat = 2
+        guard let rep = NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: Int(width * scale), pixelsHigh: Int(height * scale),
+            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0
+        ) else { return nil }
+        rep.size = CGSize(width: width, height: height)
+        host.cacheDisplay(in: host.bounds, to: rep)
+
+        let image = NSImage(size: host.bounds.size)
+        image.addRepresentation(rep)
+        return image
     }
 
     // MARK: The chat panel, answered
@@ -57,22 +84,50 @@ final class UISnapshots: XCTestCase {
         let engine = ChatEngine(provider: MockProvider())
         engine.attach(PDFDocumentInfo(fileURL: demoPDF, pageCount: document.pageCount))
 
-        var question = Question(text: "What does the paper say about verifying the cache?")
-        question.pageHint = 2
-        engine.ask(question)
+        // Two questions, so the shot shows the thread, not just an answer: the
+        // timeline rail needs a line between dots and the transcript a hairline
+        // between sections before either can be looked at.
+        for text in ["What does the paper say about verifying the cache?",
+                     "What should I be sceptical about?"] {
+            var question = Question(text: text)
+            question.pageHint = 2
+            engine.ask(question)
 
-        let deadline = Date().addingTimeInterval(30)
-        while engine.isStreaming && Date() < deadline {
-            try await Task.sleep(for: .milliseconds(100))
+            let deadline = Date().addingTimeInterval(30)
+            while engine.isStreaming && Date() < deadline {
+                try await Task.sleep(for: .milliseconds(100))
+            }
+            XCTAssertFalse(engine.isStreaming, "the mock answer never finished")
         }
-        XCTAssertFalse(engine.isStreaming, "the mock answer never finished")
 
         let answer = engine.cards.last?.answer ?? ""
         XCTAssertFalse(AnswerQuotes.quotes(in: answer).isEmpty, "no quotation to link")
 
+        // A third answer in the shape the Claude Code and DeepSeek paths have: no
+        // citations at all, pages named in the prose because the prompt asks for them.
+        // Without it the shot only ever showed the one path that has citations, which
+        // is how the strip came to be empty in the app for the other two.
+        engine.switchProvider(to: ProsePageProvider(), isWindowOverride: true)
+        var third = Question(text: "Where is the cache breakpoint discussed?")
+        third.pageHint = 1
+        engine.ask(third)
+        let deadline = Date().addingTimeInterval(30)
+        while engine.isStreaming && Date() < deadline {
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        let cliCard = try XCTUnwrap(engine.cards.last)
+        XCTAssertTrue(cliCard.citations.isEmpty, "this path is supposed to have none")
+        XCTAssertEqual(cliCard.citedPages(inDocumentOf: document.pageCount), [1, 2])
+
         let panel = ChatPanelView(engine: engine, viewer: viewer)
-        let image = try XCTUnwrap(render(panel, width: 420, height: 900))
+        let image = try XCTUnwrap(render(panel, width: 420, height: 1500))
         try write(image, "chat-panel.png")
+
+        // The same panel again with the dark side of the palette resolved — the
+        // design is drawn light-only, so this is the shot that judges the pairs
+        // `PanelInk` chose.
+        let dark = try XCTUnwrap(render(panel, width: 420, height: 1500, appearance: .darkAqua))
+        try write(dark, "chat-panel-dark.png")
     }
 
     // MARK: The flash, on the page
@@ -204,5 +259,36 @@ final class UISnapshots: XCTestCase {
             width: 420, height: 760
         ))
         try write(image, "answer-card.png")
+    }
+}
+
+/// A provider with `supportsCitations: false` that names its pages in prose, the way
+/// `ClaudeCodePrompt.ask` asks the CLI to. Everything the panel can show about where
+/// this answer came from has to be read back out of the answer text.
+private struct ProsePageProvider: ChatProvider {
+    let id = "prose-pages"
+    let displayName = "Claude (subscription)"
+    let capabilities = ProviderCapabilities(
+        supportsVision: true, supportsNativePDF: true, supportsCitations: false
+    )
+
+    func attach(document: PDFDocumentInfo) async throws -> DocumentAttachment {
+        DocumentAttachment(providerID: id, handle: document.fileURL.lastPathComponent,
+                           sourceURL: document.fileURL)
+    }
+
+    func ask(_ question: Question, in attachment: DocumentAttachment)
+        -> AsyncThrowingStream<ChatEvent, Error>
+    {
+        AsyncThrowingStream { continuation in
+            continuation.yield(.textDelta(
+                "The breakpoint is introduced on page 1 and the measurement that "
+                + "justifies it is on p. 2."
+            ))
+            continuation.yield(.usage(inputTokens: 900, cacheReadTokens: 1400,
+                                      cacheWriteTokens: 0, outputTokens: 40))
+            continuation.yield(.done)
+            continuation.finish()
+        }
     }
 }

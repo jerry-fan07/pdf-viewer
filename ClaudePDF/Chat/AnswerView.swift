@@ -82,12 +82,13 @@ private struct InlineText: View {
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        segments.reduce(Text(verbatim: "")) { result, segment in
-            switch segment {
-            case .text(let text):
-                return AnswerQuotes.split(text).reduce(result) { partial, chunk in
-                    partial + Text(markdown(chunk.text, quoting: chunk.quote))
-                }
+        // `InlineRuns` has already done the Markdown and the quote links, over the run as a
+        // whole — a `**` that opens before an equation and closes after it is one span, and
+        // it can only be seen as one by something looking at the whole run at once.
+        InlineRuns.pieces(segments).reduce(Text(verbatim: "")) { result, piece in
+            switch piece {
+            case .text(let attributed):
+                return result + Text(attributed)
 
             case .inlineMath(let latex):
                 guard let math = MathRenderer.render(
@@ -107,25 +108,6 @@ private struct InlineText: View {
         // Deliberately *not* `.frame(maxWidth: .infinity)`. A run that claims the full width
         // itself cannot then be aligned by its container, which is how a right-aligned table
         // column ends up rendering flush left. The enclosing VStack already aligns leading.
-    }
-
-    /// Inline Markdown, with a quoted passage turned into a link back to the page it
-    /// was taken from. The link lives on the attributed run rather than on a separate
-    /// view so the quote still wraps inside its sentence.
-    private func markdown(_ text: String, quoting quote: String? = nil) -> AttributedString {
-        var attributed = (try? AttributedString(
-            markdown: text,
-            options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
-        )) ?? AttributedString(text)
-
-        if let quote, let url = SourceLink.url(quote: quote) {
-            attributed.link = url
-            // `.linkColor` rather than a fixed blue: it is the system's own link colour,
-            // so it tracks light and dark appearance and the accessibility settings that
-            // change it. No underline — the colour alone marks the quote as actionable.
-            attributed.foregroundColor = .linkColor
-        }
-        return attributed
     }
 }
 
