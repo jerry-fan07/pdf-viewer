@@ -111,6 +111,7 @@ enum LaTeXNormalizer {
         "align": "aligned", "align*": "aligned", "alignat": "aligned", "alignat*": "aligned",
         "gathered": "gather", "gather*": "gather", "multline": "gather", "multline*": "gather",
         "eqnarray*": "eqnarray", "split*": "split",
+        "array": "matrix", "smallmatrix": "matrix",
     ]
 
     /// Wrappers that carry no layout of their own — strip them and typeset the body.
@@ -123,11 +124,25 @@ enum LaTeXNormalizer {
         ("\\operatorname*", "\\mathrm"), ("\\operatorname", "\\mathrm"),
         ("\\boldsymbol", "\\bm"), ("\\pmb", "\\bm"),
         ("\\mathscr", "\\mathcal"),          // no script face here; calligraphic is the near miss
-        ("\\dfrac", "\\frac"), ("\\tfrac", "\\frac"),
+        ("\\mathds", "\\mathbb"), ("\\Bbb", "\\mathbb"),
+        ("\\dfrac", "\\frac"), ("\\tfrac", "\\frac"), ("\\cfrac", "\\frac"),
+        ("\\nicefrac", "\\frac"), ("\\sfrac", "\\frac"),
         ("\\lVert", "\\|"), ("\\rVert", "\\|"), ("\\lvert", "|"), ("\\rvert", "|"),
         ("\\argmin", "\\arg\\min"), ("\\argmax", "\\arg\\max"),
         ("\\dots", "\\ldots"), ("\\dotsc", "\\ldots"), ("\\dotsb", "\\cdots"),
         ("\\lparen", "("), ("\\rparen", ")"),
+        ("\\intercal", "\\top"),             // X^\intercal and X^\top are the same transpose
+        ("\\mbox", "\\text"), ("\\varnothing", "\\emptyset"),
+        ("\\coloneqq", ":="), ("\\coloneq", ":="), ("\\eqqcolon", "=:"),
+        ("\\triangleq", "\\doteq"),          // both read "is defined as"; ≐ for ≜
+        ("\\lesssim", "\\leq"), ("\\gtrsim", "\\geq"),
+        ("\\subsetneq", "\\subset"), ("\\supsetneq", "\\supset"),
+        ("\\blacksquare", "\\square"),
+        // Nothing is aliased in the other direction: `\nmid` and `\nsubseteq` have no
+        // near-equivalent here, and the nearest *glyph* — dropping the negation — would
+        // print the opposite of what the answer says. Those still fall back to source.
+        // Macros a paper defines for itself and then uses in the prose a model quotes back.
+        ("\\tr", "\\mathrm{tr}"), ("\\rank", "\\mathrm{rank}"), ("\\diag", "\\mathrm{diag}"),
         // No `\thinspace` → `\,` alias: this pass runs *after* `droppedCommands`, so an
         // alias that produces an explicit space would re-manufacture the atom dropped there.
     ]
@@ -149,7 +164,13 @@ enum LaTeXNormalizer {
         "\\nonumber", "\\notag", "\\displaystyle", "\\textstyle", "\\scriptstyle",
         "\\limits", "\\nolimits", "\\!", "\\substack", "\\mathop",
         "\\bigl", "\\bigr", "\\Bigl", "\\Bigr", "\\biggl", "\\biggr", "\\Biggl", "\\Biggr",
-        "\\bigg", "\\Bigg", "\\big", "\\Big",
+        "\\bigg", "\\Bigg", "\\big", "\\Big", "\\middle",
+        // Annotation and spacing wrappers: the brace they carry is the content, so losing
+        // the name costs a brace over the term and keeps the term itself.
+        "\\overbrace", "\\underbrace", "\\smash", "\\slashed",
+        // Spacing classes. SwiftMath decides spacing from the glyph, so these say nothing
+        // it does not already know.
+        "\\mathbin", "\\mathrel", "\\mathpunct", "\\mathopen", "\\mathclose", "\\mathinner",
         // Explicit spaces, dropped rather than passed through, because SwiftMath 1.7.3 traps
         // on them. Its `MTMathList.finalized` treats a space atom as the previous atom when
         // deciding whether a `-` is a sign or a subtraction, but the typesetter skips spaces
@@ -174,6 +195,11 @@ enum LaTeXNormalizer {
             text = text.replacingOccurrences(of: "\\begin{\(environment)}", with: "")
             text = text.replacingOccurrences(of: "\\end{\(environment)}", with: "")
         }
+        // `array` carries a column spec — `\begin{array}{cc}` — that SwiftMath has no syntax
+        // for at all. `matrix` lays the same cells out, so the spec is what has to go, and it
+        // has to go before the environment is renamed or the `{cc}` is left as a first cell.
+        text = rewrite("\\begin{array}", withArgumentTo: "\\begin{matrix}", in: text)
+
         for (from, to) in environmentAliases {
             text = text.replacingOccurrences(of: "\\begin{\(from)}", with: "\\begin{\(to)}")
             text = text.replacingOccurrences(of: "\\end{\(from)}", with: "\\end{\(to)}")

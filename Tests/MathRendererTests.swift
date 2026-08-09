@@ -73,6 +73,41 @@ final class MathRendererTests: XCTestCase {
         }
     }
 
+    /// The second sweep, from an answer that came back with `W^\natural` drawn as source in
+    /// the middle of a sentence: everything below was checked to fail against SwiftMath
+    /// 1.7.3 and now has an alias. Each is wrapped in ordinary terms because a run that
+    /// typesets to *nothing* — a lone `\,` — is reported as a failure by its size.
+    func testTheSecondSweepOfCommandsSwiftMathRejects() {
+        for latex in ["X^\\intercal", "\\mbox{s.t.}", "a \\coloneqq b", "a \\eqqcolon b",
+                      "a \\triangleq b", "\\tr(A)", "\\rank(A)", "\\diag(\\lambda)",
+                      "\\overbrace{x + y}", "\\underbrace{x + y}_{z}", "\\cfrac{1}{2}",
+                      "\\nicefrac{1}{2}", "\\sfrac{1}{2}", "a \\enspace b", "\\varnothing",
+                      "a \\lesssim b", "a \\gtrsim b", "A \\subsetneq B", "\\blacksquare",
+                      "\\mathds{R}", "\\Bbb{R}", "\\left( a \\middle| b \\right)",
+                      "\\smash{z}", "\\mathpunct{,}", "\\mathrel{=}", "\\mathbin{\\ast}",
+                      "\\begin{array}{cc} a & b \\\\ c & d \\end{array}",
+                      "\\begin{smallmatrix} a & b \\end{smallmatrix}"] {
+            XCTAssertNotNil(render("z \(latex) w", display: true), "failed to typeset \(latex)")
+        }
+    }
+
+    /// `array` is the one environment that carries an argument. The column spec has no
+    /// SwiftMath syntax at all, so it has to be dropped rather than renamed — left in, it
+    /// typesets as a first cell reading "cc".
+    func testArrayLosesItsColumnSpecAndKeepsItsCells() {
+        XCTAssertEqual(
+            LaTeXNormalizer.normalize("\\begin{array}{c|c} a & b \\end{array}"),
+            "\\begin{matrix} a & b \\end{matrix}"
+        )
+    }
+
+    /// A negation has no honest near miss: printing `\mid` for `\nmid` would say the
+    /// opposite of the answer, so these are left to fall back to source on purpose.
+    func testNegationsAreLeftToFallBackRatherThanInverted() {
+        XCTAssertNil(render("a \\nmid b", display: true))
+        XCTAssertNil(render("A \\nsubseteq B", display: true))
+    }
+
     /// The alias pass has to respect TeX's own rule that a command name ends at the first
     /// non-letter. A plain textual swap of `\big` would turn `\bigcup` into a stray `cup`.
     func testAliasesDoNotEatLongerCommandNames() throws {

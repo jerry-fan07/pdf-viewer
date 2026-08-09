@@ -26,6 +26,12 @@ struct QACard: Identifiable {
     var pricing: TokenPricing?
     var answer: String = ""
     var citations: [Citation] = []
+    /// Page numbers the finished answer names in its own prose — the only
+    /// page-anchored source the two providers without citations have. Read out of
+    /// `answer` by `PageReferences` when the answer stops arriving, and never
+    /// persisted: it is derived, and deriving it again on restore is what gives a
+    /// transcript saved before it existed its pages back.
+    var namedPages: [Int] = []
     var notices: [String] = []
     var inputTokens: Int?
     var cacheReadTokens: Int?
@@ -34,6 +40,21 @@ struct QACard: Identifiable {
     var costUSD: Double?
     var error: String?
     var isStreaming = true
+
+    /// The answer has stopped arriving — from the stream's own `.done`, from a
+    /// cancel, from an error, and from history restore, which is the same moment for
+    /// a card that was saved. Idempotent, because several of those coincide.
+    ///
+    /// Parsing here rather than where the pages are drawn is the difference between
+    /// once per answer and once per streamed delta per card: the panel re-renders on
+    /// every delta, and re-reading the whole transcript each time is work nobody
+    /// asked for. Mid-stream is also the wrong moment to read it — "page 1" is a
+    /// prefix of "page 12", so a chip would point at the wrong page for as long as
+    /// the next token takes to arrive.
+    mutating func finish() {
+        isStreaming = false
+        namedPages = PageReferences.pages(in: answer)
+    }
 
     /// Share of this question's input that was read from the document cache.
     /// Zero on question 2 means something is mutating the cached prefix (PLAN.md §5.1).
@@ -60,6 +81,11 @@ final class ChatEngine: ObservableObject {
     /// applying to it afterwards: Settings is the default for newly opened
     /// documents, not a remote control for a window someone has already steered.
     @Published private(set) var providerIsWindowOverride = false
+
+    /// What the panel header names. The filename, not PDF metadata: titles in
+    /// metadata are wrong or missing often enough that the name the reader chose
+    /// for the file is the more reliable label.
+    @Published private(set) var documentTitle: String?
 
     // Composer state: attachments staged for the next question, and a focus signal.
     @Published var pendingSelection: PendingSelection?
@@ -101,6 +127,7 @@ final class ChatEngine: ObservableObject {
     func attach(_ info: PDFDocumentInfo) {
         documentURL = info.fileURL
         documentInfo = info
+        documentTitle = info.fileURL.deletingPathExtension().lastPathComponent
         restoreHistory(for: info.fileURL)
         startAttach()
     }
@@ -243,7 +270,9 @@ final class ChatEngine: ObservableObject {
             } catch {
                 update(cardID) { $0.error = error.localizedDescription }
             }
-            update(cardID) { $0.isStreaming = false }
+            // Also the path a cancelled or failed answer leaves by: whatever arrived
+            // before it stopped is still an answer, and still points at pages.
+            update(cardID) { $0.finish() }
             isStreaming = false
             // Only completed cards are written: a half-streamed answer restored
             // as if it were finished would read as a truncation bug.
@@ -340,7 +369,7 @@ final class ChatEngine: ObservableObject {
             case .notice(let text):
                 if !card.notices.contains(text) { card.notices.append(text) }
             case .done:
-                card.isStreaming = false
+                card.finish()
             }
         }
     }
@@ -441,5 +470,9 @@ extension QACard {
             error: stored.error,
             isStreaming: false
         )
+        // Restored, not replayed: `namedPages` is derived from the answer rather than
+        // saved with it, so a transcript written before any of this existed gets its
+        // pages the first time it is reopened.
+        finish()
     }
 }
