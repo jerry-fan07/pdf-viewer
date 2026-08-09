@@ -22,7 +22,7 @@ Tests live in `Tests` and run against the app as their test host — no GUI auto
 
 ## Status
 
-All seven phases are done: the viewer, selection/crop, all three providers (Anthropic API, Claude subscription via the Claude Code CLI, DeepSeek), the polish pass — per-document history, per-answer cost, OCR for scanned pages, and an app icon — and live provider switching, with **313 unit tests**. The subscription path has been verified live; the two API paths are code-complete with their live cache-hit criteria still unverified (both need an API key).
+All seven phases are done: the viewer, selection/crop, all three providers (Anthropic API, Claude subscription via the Claude Code CLI, DeepSeek), the polish pass — per-document history, per-answer cost, OCR for scanned pages, and an app icon — and live provider switching, with **316 unit tests**. The subscription path has been verified live; the two API paths are code-complete with their live cache-hit criteria still unverified (both need an API key).
 
 Two things are deliberately not finished, both blocked on credentials rather than code: **notarization** (the Developer ID build is signed, hardened and verified — `Scripts/release.sh --notarize` submits and staples once `xcrun notarytool store-credentials` has run) and the **cache pre-warm knob**, which PLAN §7 asks to be verified against `claude-opus-5` before shipping. See the phase list in [PLAN.md](PLAN.md).
 

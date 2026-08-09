@@ -49,6 +49,7 @@ struct DocumentWindow: View {
     // Watched so a change in Settings reaches documents that are already open.
     @AppStorage(AppSettings.providerChoiceKey) private var providerChoice = ProviderChoice.automatic.rawValue
     @AppStorage(AppSettings.anthropicModelKey) private var anthropicModel = AnthropicModel.opus5.rawValue
+    @AppStorage(AppSettings.claudeCodeModelKey) private var claudeCodeModel = ClaudeCodeModel.cliDefault.rawValue
     @AppStorage(AppSettings.claudeCodeEffortKey) private var claudeCodeEffort = ClaudeCodeEffort.cliDefault.rawValue
     @AppStorage(AppSettings.deepseekModelKey) private var deepseekModel = DeepSeekModel.v4Flash.rawValue
     @AppStorage(AppSettings.deepseekThinkingKey) private var deepseekThinking = DeepSeekThinking.low.rawValue
@@ -309,7 +310,8 @@ struct DocumentWindow: View {
     /// Everything in Settings that changes which provider — or which model —
     /// answers. Collapsed into one value because `onChange` wants one.
     private var providerSettings: String {
-        [providerChoice, anthropicModel, claudeCodeEffort, deepseekModel, deepseekThinking]
+        [providerChoice, anthropicModel, claudeCodeModel, claudeCodeEffort,
+         deepseekModel, deepseekThinking]
             .joined(separator: "|")
     }
 

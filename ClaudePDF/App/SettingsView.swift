@@ -6,6 +6,7 @@ struct SettingsView: View {
     @AppStorage(AppSettings.appearanceKey) private var appearance = AppearanceMode.matchSystem.rawValue
     @AppStorage(AppSettings.providerChoiceKey) private var providerChoice = ProviderChoice.automatic.rawValue
     @AppStorage(AppSettings.anthropicModelKey) private var anthropicModel = AnthropicModel.opus5.rawValue
+    @AppStorage(AppSettings.claudeCodeModelKey) private var claudeCodeModel = ClaudeCodeModel.cliDefault.rawValue
     @AppStorage(AppSettings.claudeCodeEffortKey) private var claudeCodeEffort = ClaudeCodeEffort.cliDefault.rawValue
     @AppStorage(AppSettings.deepseekModelKey) private var deepseekModel = DeepSeekModel.v4Flash.rawValue
     @AppStorage(AppSettings.deepseekThinkingKey) private var deepseekThinking = DeepSeekThinking.low.rawValue
@@ -73,12 +74,20 @@ struct SettingsView: View {
                 .font(.caption)
                 .foregroundStyle(cliInstalled ? Color.secondary : Color.orange)
 
+                Picker("Model", selection: $claudeCodeModel) {
+                    ForEach(ClaudeCodeModel.allCases) { model in
+                        Text(model.displayName).tag(model.rawValue)
+                    }
+                }
                 Picker("Effort", selection: $claudeCodeEffort) {
                     ForEach(ClaudeCodeEffort.allCases) { level in
                         Text(level.displayName).tag(level.rawValue)
                     }
                 }
-                Text("Answers take roughly 20–30 seconds at the CLI default. Lower effort "
+                Text("“CLI default” answers on whatever model your Claude Code is already "
+                     + "configured for; the rest name one for this app only, and each tracks "
+                     + "the latest of its line. "
+                     + "Answers take roughly 20–30 seconds at the CLI default. Lower effort "
                      + "trades depth for speed. Nothing is stored by this app on this path.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
