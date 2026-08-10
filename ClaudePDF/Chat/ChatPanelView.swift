@@ -95,8 +95,11 @@ struct ChatPanelView: View {
             Section("Ask with") {
                 ForEach(ProviderChoice.switchable) { choice in
                     Button {
+                        // Re-picking the provider that is already answering is
+                        // not steering: it must not be what quietly cuts this
+                        // window off from the Settings picker.
                         engine.switchProvider(to: ProviderFactory.make(choice),
-                                              isWindowOverride: true)
+                                              isWindowOverride: choice.providerID != engine.providerID)
                     } label: {
                         if choice.providerID == engine.providerID {
                             Label(choice.displayName, systemImage: "checkmark")

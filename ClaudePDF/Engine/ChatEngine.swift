@@ -77,9 +77,11 @@ final class ChatEngine: ObservableObject {
     /// Who answers this document's questions right now. Published because it can
     /// change under an open window (Phase 7) — the header names it.
     @Published private(set) var provider: ChatProvider
-    /// Set once the reader picks a provider for *this* window. Settings stops
-    /// applying to it afterwards: Settings is the default for newly opened
-    /// documents, not a remote control for a window someone has already steered.
+    /// Set once the reader picks a provider for *this* window. The Settings
+    /// *provider picker* stops applying to it afterwards: it is the default for
+    /// newly opened documents, not a remote control for a window someone has
+    /// already steered. The knobs on that provider still apply — see
+    /// `applySettings`.
     @Published private(set) var providerIsWindowOverride = false
 
     /// What the panel header names. The filename, not PDF metadata: titles in
@@ -111,6 +113,9 @@ final class ChatEngine: ObservableObject {
     /// the provider changed or the reader cancelled it — must not write its
     /// status, its error, or its result back into the engine.
     private var attachGeneration = 0
+    /// A Settings change that arrived while an answer was streaming, held until
+    /// the stream ends rather than discarded. See `applySettings`.
+    private var pendingSettingsChange: (@MainActor () -> Void)?
 
     init(provider: ChatProvider, history: HistoryStore = .shared) {
         self.provider = provider
@@ -153,6 +158,38 @@ final class ChatEngine: ObservableObject {
         guard Self.attachmentKey(for: newProvider) != previousKey else { return }
         stopAttach()
         startAttach()
+    }
+
+    /// Re-read Settings into this window's provider.
+    ///
+    /// A window whose provider the reader picked by hand keeps that provider —
+    /// but it does not keep the *settings* the provider was built with. Thinking
+    /// effort, subscription effort and model are not "who answers", they are how
+    /// the answer is asked for, and a reader who moves one of them in Settings
+    /// means the window they are reading. Ignoring the change left such a window
+    /// asking at whatever effort was current when it was steered, with no sign on
+    /// screen that the picker and the request disagreed — a thinking level set to
+    /// High that still sent `reasoning_effort: off` and its 16K output budget.
+    ///
+    /// So an override window rebuilds its own kind of provider from current
+    /// settings; only the choice of kind is frozen. A provider that came from
+    /// somewhere other than the menu (a test double, a preview) maps to no
+    /// choice, and is left exactly as it is.
+    func applySettings(using build: @escaping (ProviderChoice) -> ChatProvider = ProviderFactory.make,
+                       settingsChoice: ProviderChoice = AppSettings.providerChoice)
+    {
+        // Refusing mid-answer is right; dropping the change is not. The reader
+        // moved a knob and the next question has to obey it.
+        guard !isStreaming else {
+            pendingSettingsChange = { [weak self] in
+                self?.applySettings(using: build, settingsChoice: settingsChoice)
+            }
+            return
+        }
+
+        let choice = providerIsWindowOverride ? ProviderChoice(providerID: provider.id) : settingsChoice
+        guard let choice else { return }
+        switchProvider(to: build(choice), isWindowOverride: providerIsWindowOverride)
     }
 
     /// Abandon an attach in progress. A scanned document can be minutes of OCR,
@@ -274,6 +311,11 @@ final class ChatEngine: ObservableObject {
             // before it stopped is still an answer, and still points at pages.
             update(cardID) { $0.finish() }
             isStreaming = false
+            // A Settings change made while this answer streamed was held, not
+            // dropped: apply it now, so the next question is asked the new way.
+            let pending = pendingSettingsChange
+            pendingSettingsChange = nil
+            pending?()
             // Only completed cards are written: a half-streamed answer restored
             // as if it were finished would read as a truncation bug.
             persist()

@@ -1,8 +1,11 @@
 import Foundation
 
 /// Models offered by the Anthropic provider — PLAN.md §5.1.
-/// Opus 5 is the default; Sonnet 5 is cheaper; Haiku 4.5 is cheapest but its
-/// 200K context caps native PDFs at 100 pages instead of 600 (PLAN.md §7).
+/// Sonnet 5 is the default: near-Opus quality on a reading question at three
+/// fifths the input price, which is the trade this app makes hundreds of times
+/// per document. Opus 5 is there for the questions that earn it; Haiku 4.5 is
+/// cheapest but its 200K context caps native PDFs at 100 pages instead of 600
+/// (PLAN.md §7).
 enum AnthropicModel: String, CaseIterable, Identifiable, Sendable {
     case opus5 = "claude-opus-5"
     case sonnet5 = "claude-sonnet-5"
@@ -23,6 +26,16 @@ enum AnthropicModel: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .haiku45: return 100
         case .opus5, .sonnet5: return 600
+        }
+    }
+
+    /// The most output tokens the model will produce in one response, verified
+    /// against the API docs (Aug 2026). A hard ceiling: `max_tokens` above it is
+    /// refused, and thinking is spent out of the same figure.
+    var maxOutputTokens: Int {
+        switch self {
+        case .opus5, .sonnet5: return 128_000
+        case .haiku45: return 64_000
         }
     }
 
@@ -137,10 +150,31 @@ struct AnthropicMessagesRequest: Encodable {
 /// questions. Kept pure and free of I/O so the caching discipline is unit-testable
 /// (PLAN.md §9: "unit-test that request prefixes are byte-identical").
 enum AnthropicRequestBuilder {
-    /// We stream, so the SDK/HTTP timeout ceiling doesn't apply. Opus 5 runs
-    /// adaptive thinking by default and thinking counts against `max_tokens`,
-    /// so PLAN.md's 4096 would truncate answers mid-sentence.
-    static let maxTokens = 16_000
+    /// We stream, so the SDK/HTTP timeout ceiling doesn't apply — the only thing
+    /// `max_tokens` has to be is large enough. Thinking is on by default and is
+    /// spent out of this same budget *before* the answer is written, so a flat
+    /// 16K was a ceiling on the thinking and a guillotine on the answer: the
+    /// reader lost the part they asked for, on questions whose answers are a few
+    /// hundred tokens. Headroom left unused is free — only tokens produced are
+    /// billed — so the budget is now generous, and the ceiling exists solely so a
+    /// runaway can't become a runaway bill.
+    ///
+    /// Not the models' full output caps (128K / 64K — see `maxOutputTokens`),
+    /// because the prompt here is a *native PDF*: 600 pages of it, and this is
+    /// the one path that sends the document itself rather than extracted text.
+    /// Half the cap leaves room for that alongside the answer on the largest
+    /// documents, and 64K is already two orders of magnitude past what a reading
+    /// answer plus its thinking spends.
+    ///
+    /// If `effort` below ever becomes a setting, this should scale with it the
+    /// way `DeepSeekRequestBuilder.maxTokens(for:)` scales with thinking — the
+    /// effort is what spends the budget.
+    static func maxTokens(for model: AnthropicModel) -> Int {
+        switch model {
+        case .opus5, .sonnet5: return 64_000
+        case .haiku45: return 32_000   // 200K context, and a 100-page PDF fills much of it
+        }
+    }
 
     /// Latency lever for a reading UI. `output_config` is a top-level request
     /// parameter, so changing it never invalidates the cached document prefix.
@@ -216,7 +250,7 @@ enum AnthropicRequestBuilder {
     {
         AnthropicMessagesRequest(
             model: model.rawValue,
-            maxTokens: maxTokens,
+            maxTokens: maxTokens(for: model),
             stream: true,
             system: [.init(text: systemPrompt)],
             messages: [.init(content: content(for: question, attachment: attachment))],

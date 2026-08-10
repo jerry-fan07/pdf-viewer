@@ -296,6 +296,21 @@ final class DeepSeekTests: XCTestCase {
         XCTAssertTrue(notices[0].contains("cut short"), notices[0])
     }
 
+    /// The notice names the ceiling it hit, because 16K / 64K / 128K / 256K each
+    /// identify a thinking setting — which is how a "the limit is still 16K"
+    /// report can be told apart from a genuinely long answer.
+    func testTruncationNoticeNamesTheBudgetTheRequestCarried() throws {
+        var decoder = DeepSeekStreamDecoder(
+            outputBudget: DeepSeekRequestBuilder.maxTokens(for: .high)
+        )
+        _ = try decoder.consume(#"{"choices":[{"delta":{"content":"…"},"finish_reason":"length"}]}"#)
+        let notice = try XCTUnwrap(try decoder.consume("[DONE]").compactMap { event -> String? in
+            if case .notice(let text) = event { return text }
+            return nil
+        }.first)
+        XCTAssertTrue(notice.contains("128K-token"), notice)
+    }
+
     func testMalformedPayloadsAreSkippedButErrorsThrow() throws {
         var decoder = DeepSeekStreamDecoder()
         XCTAssertTrue(try decoder.consume("not json at all").isEmpty)

@@ -8,8 +8,10 @@ final class AnthropicStreamTests: XCTestCase {
 
     // MARK: Helpers
 
-    private func drain(_ payloads: [String]) throws -> ([ChatEvent], AnthropicStreamDecoder) {
-        var decoder = AnthropicStreamDecoder()
+    private func drain(_ payloads: [String],
+                       outputBudget: Int? = nil) throws -> ([ChatEvent], AnthropicStreamDecoder)
+    {
+        var decoder = AnthropicStreamDecoder(outputBudget: outputBudget)
         var events: [ChatEvent] = []
         for payload in payloads {
             events += try decoder.consume(Data(payload.utf8))
@@ -26,6 +28,13 @@ final class AnthropicStreamTests: XCTestCase {
     private func citations(in events: [ChatEvent]) -> [(page: Int, text: String)] {
         events.compactMap { event in
             if case .citation(let page, let text) = event { return (page, text) }
+            return nil
+        }
+    }
+
+    private func notices(in events: [ChatEvent]) -> [String] {
+        events.compactMap { event in
+            if case .notice(let text) = event { return text }
             return nil
         }
     }
@@ -110,6 +119,45 @@ final class AnthropicStreamTests: XCTestCase {
         let totals = try XCTUnwrap(usage(in: events))
         XCTAssertEqual(totals.input, 100)
         XCTAssertEqual(totals.output, 50)
+    }
+
+    // MARK: Running out of room
+
+    /// A sentence that stops mid-word used to arrive with nothing beside it. The
+    /// notice names the budget, because which ceiling was in force is the whole
+    /// diagnosis.
+    func testTruncatedAnswerIsFlaggedWithTheBudgetItHit() throws {
+        let (events, _) = try drain([
+            #"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"The thes"}}"#,
+            #"{"type":"message_delta","delta":{"stop_reason":"max_tokens"},"usage":{"output_tokens":64000}}"#,
+            #"{"type":"message_stop"}"#,
+        ], outputBudget: AnthropicRequestBuilder.maxTokens(for: .sonnet5))
+
+        let notice = try XCTUnwrap(notices(in: events).first)
+        XCTAssertTrue(notice.contains("cut short"), notice)
+        XCTAssertTrue(notice.contains("64K-token"), notice)
+        guard case .done = events.last else { return XCTFail("stream must still end with .done") }
+    }
+
+    /// The other way an answer runs out of room, and the one a bigger output
+    /// budget cannot fix — so it must not read as the same failure.
+    func testAContextWindowOverrunSaysSomethingElse() throws {
+        let (events, _) = try drain([
+            #"{"type":"message_delta","delta":{"stop_reason":"model_context_window_exceeded"}}"#,
+            #"{"type":"message_stop"}"#,
+        ], outputBudget: 64_000)
+
+        let notice = try XCTUnwrap(notices(in: events).first)
+        XCTAssertTrue(notice.contains("context window"), notice)
+        XCTAssertFalse(notice.contains("output limit"), "a full context is not a small budget")
+    }
+
+    func testAnAnswerThatEndedNormallyIsNotFlagged() throws {
+        let (events, _) = try drain([
+            #"{"type":"message_delta","delta":{"stop_reason":"end_turn"}}"#,
+            #"{"type":"message_stop"}"#,
+        ], outputBudget: 64_000)
+        XCTAssertTrue(notices(in: events).isEmpty)
     }
 
     // MARK: Tolerance for everything else on the wire

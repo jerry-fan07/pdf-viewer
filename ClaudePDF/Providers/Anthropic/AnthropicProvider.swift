@@ -139,7 +139,11 @@ struct AnthropicProvider: ChatProvider {
             throw AnthropicError.api(status: http.statusCode, detail: Self.errorDetail(from: data))
         }
 
-        var decoder = AnthropicStreamDecoder()
+        // The budget this request actually carried, so a cut-short answer names
+        // the ceiling it hit rather than leaving the reader to guess.
+        var decoder = AnthropicStreamDecoder(
+            outputBudget: AnthropicRequestBuilder.maxTokens(for: model)
+        )
         for try await line in bytes.lines {
             try Task.checkCancellation()
             // Tolerate CRLF even though the API sends bare LF.

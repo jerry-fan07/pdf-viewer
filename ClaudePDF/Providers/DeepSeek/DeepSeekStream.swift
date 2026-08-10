@@ -13,6 +13,17 @@ import Foundation
 ///  • V4 runs thinking by default, so deltas carry `reasoning_content` alongside
 ///    `content`; reasoning is skipped, exactly like Anthropic's `thinking_delta`.
 struct DeepSeekStreamDecoder {
+    /// The `max_tokens` this stream was asked for. Carried only so a cut-short
+    /// answer can name the ceiling it hit: 16K, 64K, 128K and 256K each point at
+    /// a different thinking setting, so the number tells the reader — and the bug
+    /// report — which budget was actually in force, rather than which one the
+    /// Settings picker claims.
+    let outputBudget: Int?
+
+    init(outputBudget: Int? = nil) {
+        self.outputBudget = outputBudget
+    }
+
     private(set) var cacheHitTokens = 0
     private(set) var cacheMissTokens = 0
     private(set) var outputTokens = 0
@@ -64,7 +75,10 @@ struct DeepSeekStreamDecoder {
                              outputTokens: outputTokens))
 
         if finishReason == "length" {
-            events.append(.notice("The answer hit the output limit and was cut short."))
+            // "128K", not "128,000": the budgets are round thousands, and the K
+            // form needs no locale to be right.
+            let limit = outputBudget.map { $0 % 1_000 == 0 ? "\($0 / 1_000)K-token " : "\($0)-token " } ?? ""
+            events.append(.notice("The answer hit the \(limit)output limit and was cut short."))
         }
         if finishReason == "content_filter" {
             events.append(.notice("DeepSeek filtered part of this answer."))
