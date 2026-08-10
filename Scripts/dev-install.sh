@@ -11,9 +11,29 @@
 # same Dock icon, one "Keep in Dock" entry that survives a rebuild, and one
 # bundle for LaunchServices to resolve `open -b` and the PDF type against.
 #
+# It also signs with the Developer ID certificate rather than letting xcodebuild
+# fall back to ad-hoc, which is what stops the keychain asking for the API keys
+# again after every rebuild. Borrowed from Shifu's scripts/install-app.sh, for
+# the reason its header gives: the keychain grants access by the app's
+# designated requirement, and ad-hoc signing writes the build's cdhash into that
+# requirement —
+#
+#   designated => cdhash H"02a22f24…"
+#
+# so every rebuild is a stranger to the item it saved yesterday. Signed with the
+# certificate the requirement is instead
+#
+#   anchor apple generic and identifier "dev.jerryfan.ClaudePDF"
+#     and … certificate leaf[subject.OU] = XMB3LK279J
+#
+# which is identical across rebuilds, across branches, and identical to what
+# release.sh ships — so a dev build, another branch's dev build and a release
+# build are all one app to the keychain and to TCC.
+#
 #   Scripts/dev-install.sh             # build Debug, install, run in foreground
 #   INSTALL_DIR=/Applications Scripts/dev-install.sh
 #   CONFIGURATION=Release Scripts/dev-install.sh
+#   IDENTITY="Apple Development" Scripts/dev-install.sh
 #
 # One tile means one bundle at that path, so only one branch can be installed
 # at a time: this quits an instance already running from the install path
@@ -28,19 +48,40 @@ BUNDLE_ID="dev.jerryfan.ClaudePDF"
 CONFIGURATION="${CONFIGURATION:-Debug}"
 DERIVED_DATA="${DERIVED_DATA:-DerivedData}"
 INSTALL_DIR="${INSTALL_DIR:-$HOME/Applications}"
+# Same names and same defaults as release.sh, so the two scripts read as one
+# story about how this app is signed.
+IDENTITY="${IDENTITY:-Developer ID Application}"
+TEAM_ID="${TEAM_ID:-XMB3LK279J}"
 
 BUILT="$DERIVED_DATA/Build/Products/$CONFIGURATION/$APP_NAME.app"
 INSTALLED="$INSTALL_DIR/$APP_NAME.app"
 
 command -v xcodegen >/dev/null || { echo "xcodegen not found (brew install xcodegen)"; exit 1; }
 
+# Manual signing only if the certificate is actually in the keychain: on a
+# machine without it the build should still work, just with the prompts back.
+# Expanded as ${sign_args[@]+…} below: bash 3.2 is what /usr/bin/env finds on a
+# stock Mac, and there an empty array under `set -u` is an unbound variable.
+sign_args=()
+if security find-identity -v -p codesigning | grep -q "$IDENTITY"; then
+  echo "==> Signing with '$IDENTITY' (team $TEAM_ID)"
+  sign_args=(CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY="$IDENTITY" DEVELOPMENT_TEAM="$TEAM_ID")
+else
+  echo "==> No '$IDENTITY' identity found — falling back to ad-hoc signing."
+  echo "    The keychain will ask for the API keys again after every rebuild."
+fi
+
 xcodegen generate
+# No --options=runtime here, unlike release.sh: Debug builds carry
+# get-task-allow so the debugger can attach, and that is fine locally but is
+# refused by the notary service. Releases go through release.sh for that reason.
 xcodebuild \
   -project "$APP_NAME.xcodeproj" \
   -scheme "$APP_NAME" \
   -configuration "$CONFIGURATION" \
   -destination 'platform=macOS' \
   -derivedDataPath "$DERIVED_DATA" \
+  ${sign_args[@]+"${sign_args[@]}"} \
   build
 
 # Only instances launched from the install path are in the way; a build another
@@ -69,6 +110,12 @@ rm -rf "$STAGE"
 ditto "$BUILT" "$STAGE"
 rm -rf "$INSTALLED"
 mv "$STAGE" "$INSTALLED"
+
+# The requirement printed here is the identity the keychain and TCC remember the
+# app by. A `cdhash` in it means the signing above fell back to ad-hoc and the
+# prompts are coming back; anything else is stable across rebuilds.
+codesign --verify --deep --strict "$INSTALLED"
+codesign -d -r- "$INSTALLED" 2>&1 | sed -n 's/^#* *designated => /    identity: /p'
 
 # Tell LaunchServices this path is now the app for $BUNDLE_ID, so `open -b`,
 # "Open With" and the PDF document type resolve here rather than to whichever
