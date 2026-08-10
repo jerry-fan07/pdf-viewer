@@ -5,7 +5,7 @@ struct SettingsView: View {
     @State private var deepseekKey = ""
     @AppStorage(AppSettings.appearanceKey) private var appearance = AppearanceMode.matchSystem.rawValue
     @AppStorage(AppSettings.providerChoiceKey) private var providerChoice = ProviderChoice.automatic.rawValue
-    @AppStorage(AppSettings.anthropicModelKey) private var anthropicModel = AnthropicModel.opus5.rawValue
+    @AppStorage(AppSettings.anthropicModelKey) private var anthropicModel = AnthropicModel.sonnet5.rawValue
     @AppStorage(AppSettings.claudeCodeModelKey) private var claudeCodeModel = ClaudeCodeModel.cliDefault.rawValue
     @AppStorage(AppSettings.claudeCodeEffortKey) private var claudeCodeEffort = ClaudeCodeEffort.cliDefault.rawValue
     @AppStorage(AppSettings.deepseekModelKey) private var deepseekModel = DeepSeekModel.v4Flash.rawValue

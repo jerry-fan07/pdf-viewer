@@ -48,7 +48,7 @@ struct DocumentWindow: View {
 
     // Watched so a change in Settings reaches documents that are already open.
     @AppStorage(AppSettings.providerChoiceKey) private var providerChoice = ProviderChoice.automatic.rawValue
-    @AppStorage(AppSettings.anthropicModelKey) private var anthropicModel = AnthropicModel.opus5.rawValue
+    @AppStorage(AppSettings.anthropicModelKey) private var anthropicModel = AnthropicModel.sonnet5.rawValue
     @AppStorage(AppSettings.claudeCodeModelKey) private var claudeCodeModel = ClaudeCodeModel.cliDefault.rawValue
     @AppStorage(AppSettings.claudeCodeEffortKey) private var claudeCodeEffort = ClaudeCodeEffort.cliDefault.rawValue
     @AppStorage(AppSettings.deepseekModelKey) private var deepseekModel = DeepSeekModel.v4Flash.rawValue
@@ -325,11 +325,10 @@ struct DocumentWindow: View {
     }
 
     private func applyProviderSettings() {
-        // A window whose provider was picked by hand keeps it: the Settings picker
-        // is the default for newly opened documents, not a remote control for
-        // windows the reader has already steered.
-        guard !engine.providerIsWindowOverride else { return }
-        engine.switchProvider(to: ProviderFactory.make())
+        // Which provider answers is frozen in a window the reader has steered;
+        // how it answers — thinking, effort, model — is not. `applySettings`
+        // draws that line, because the engine is where it can be tested.
+        engine.applySettings()
     }
 
     // MARK: Loading

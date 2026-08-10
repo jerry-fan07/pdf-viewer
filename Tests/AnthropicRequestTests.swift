@@ -209,7 +209,7 @@ final class AnthropicRequestTests: XCTestCase {
         )
         XCTAssertEqual(body.model, "claude-sonnet-5")
         XCTAssertTrue(body.stream)
-        XCTAssertEqual(body.maxTokens, AnthropicRequestBuilder.maxTokens)
+        XCTAssertEqual(body.maxTokens, AnthropicRequestBuilder.maxTokens(for: .sonnet5))
         XCTAssertGreaterThan(body.maxTokens, 4096, "thinking counts against max_tokens on Opus 5")
         XCTAssertEqual(body.outputConfig.effort, AnthropicRequestBuilder.effort)
         XCTAssertEqual(body.fallbacks, "default")
@@ -220,5 +220,33 @@ final class AnthropicRequestTests: XCTestCase {
         XCTAssertEqual(AnthropicModel.opus5.pageCap, 600)
         XCTAssertEqual(AnthropicModel.sonnet5.pageCap, 600)
         XCTAssertEqual(AnthropicModel.haiku45.pageCap, 100)
+    }
+
+    /// Thinking is spent out of `max_tokens` before the answer is, so the budget
+    /// has to clear a reading answer by a wide margin — and stay under the cap
+    /// the model will actually accept, which is not the same number per model.
+    func testOutputBudgetClearsTheAnswerAndStaysUnderEachModelsCap() {
+        for model in AnthropicModel.allCases {
+            let budget = AnthropicRequestBuilder.maxTokens(for: model)
+            XCTAssertLessThanOrEqual(budget, model.maxOutputTokens,
+                                     "\(model.displayName) refuses max_tokens above its output cap")
+            XCTAssertGreaterThan(budget, 16_000,
+                                 "16K was the ceiling that truncated answers — \(model.displayName)")
+        }
+        // Haiku's 200K context holds a 100-page PDF and the answer together, so
+        // its budget is the one that has to stay modest.
+        XCTAssertLessThan(AnthropicRequestBuilder.maxTokens(for: .haiku45),
+                          AnthropicRequestBuilder.maxTokens(for: .opus5))
+    }
+
+    /// The picker and the factory read the same key; if their defaults disagree,
+    /// a fresh install shows one model and bills for another.
+    func testTheDefaultModelIsSonnet5() {
+        let key = AppSettings.anthropicModelKey
+        let original = UserDefaults.standard.object(forKey: key)
+        UserDefaults.standard.removeObject(forKey: key)
+        defer { UserDefaults.standard.set(original, forKey: key) }
+
+        XCTAssertEqual(AppSettings.anthropicModel, .sonnet5)
     }
 }

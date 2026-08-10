@@ -106,22 +106,22 @@ struct DeepSeekProvider: ChatProvider {
                           + "in the context window; later pages were not sent."))
         }
 
+        let body = DeepSeekRequestBuilder.body(
+            question: question,
+            document: document,
+            title: attachment.title,
+            model: model,
+            thinking: thinking,
+            canSeeImages: capabilities.supportsVision,
+            conversation: conversation
+        )
+
         var request = URLRequest(url: Self.endpoint)
         request.httpMethod = "POST"
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
-        request.httpBody = try DeepSeekRequestBuilder.encoder().encode(
-            DeepSeekRequestBuilder.body(
-                question: question,
-                document: document,
-                title: attachment.title,
-                model: model,
-                thinking: thinking,
-                canSeeImages: capabilities.supportsVision,
-                conversation: conversation
-            )
-        )
+        request.httpBody = try DeepSeekRequestBuilder.encoder().encode(body)
 
         let (bytes, response) = try await Self.session.bytes(for: request)
         guard let http = response as? HTTPURLResponse else { throw DeepSeekError.badResponse }
@@ -132,7 +132,9 @@ struct DeepSeekProvider: ChatProvider {
             throw DeepSeekError.api(status: http.statusCode, detail: Self.errorDetail(from: data))
         }
 
-        var decoder = DeepSeekStreamDecoder()
+        // From the body that was sent, not recomputed: the cut-short notice names
+        // the ceiling this request actually carried.
+        var decoder = DeepSeekStreamDecoder(outputBudget: body.maxTokens)
         for try await line in bytes.lines {
             try Task.checkCancellation()
             let trimmed = line.hasSuffix("\r") ? String(line.dropLast()) : line

@@ -100,8 +100,11 @@ enum AppSettings {
         UserDefaults.standard.object(forKey: ocrEnabledKey) as? Bool ?? true
     }
 
+    /// Defaults to Sonnet 5 — see `AnthropicModel`. The two `@AppStorage`
+    /// declarations of this key have to agree with it, or a fresh install shows
+    /// one model in the picker and bills for another.
     static var anthropicModel: AnthropicModel {
-        AnthropicModel(rawValue: UserDefaults.standard.string(forKey: anthropicModelKey) ?? "") ?? .opus5
+        AnthropicModel(rawValue: UserDefaults.standard.string(forKey: anthropicModelKey) ?? "") ?? .sonnet5
     }
 
     static var deepseekModel: DeepSeekModel {

@@ -159,6 +159,86 @@ final class ChatEngineTests: XCTestCase {
         XCTAssertEqual(engine.cards[1].modelName, "DeepSeek V4")
     }
 
+    // MARK: Settings reaching an open window
+
+    /// The bug this guards: a window whose provider the reader picked by hand
+    /// ignored *every* later Settings change, so DeepSeek's Thinking picker could
+    /// read High while the window kept asking at the effort — and the output
+    /// budget — it was steered with.
+    func testSettingsReachAWindowTheReaderAlreadySteered() async throws {
+        let steered = stub(id: "deepseek", name: "DeepSeek", vision: false, marker: "thinking-off")
+        let refreshed = stub(id: "deepseek", name: "DeepSeek", vision: false, marker: "thinking-high")
+        let engine = ChatEngine(provider: steered, history: history)
+
+        engine.attach(info)
+        try await waitUntil { await self.log.attaches("deepseek") == 1 }
+        engine.switchProvider(to: steered, isWindowOverride: true)
+
+        // Settings says Claude; this window still says DeepSeek. Only the *choice*
+        // is frozen — the settings on it are not.
+        engine.applySettings(using: { choice in
+            XCTAssertEqual(choice, .deepseek, "Settings hijacked a window the reader had steered")
+            return refreshed
+        }, settingsChoice: .claudeCode)
+
+        XCTAssertEqual(engine.providerID, "deepseek")
+        XCTAssertTrue(engine.providerIsWindowOverride, "the window stopped being the reader's")
+        let answer = try await ask(engine, "how deep are you thinking now?")
+        XCTAssertTrue(answer.contains("thinking-high"), "the new setting never reached the request: \(answer)")
+        let attaches = await log.attaches("deepseek")
+        XCTAssertEqual(attaches, 1, "an ask-time setting change paid for a fresh attach")
+    }
+
+    func testSettingsStillMoveAWindowTheReaderNeverSteered() async throws {
+        let claude = stub(id: "claude-code", name: "Claude (subscription)")
+        let deepseek = stub(id: "deepseek", name: "DeepSeek", vision: false)
+        let engine = ChatEngine(provider: claude, history: history)
+
+        engine.applySettings(using: { _ in deepseek }, settingsChoice: .deepseek)
+
+        XCTAssertEqual(engine.providerID, "deepseek")
+        XCTAssertFalse(engine.providerIsWindowOverride, "Settings is not the reader steering the window")
+    }
+
+    /// A change made while an answer streams is refused — swapping the voice
+    /// mid-sentence has no sensible reading — but refusing is not discarding.
+    func testASettingsChangeMadeMidAnswerLandsWhenItEnds() async throws {
+        let slow = stub(id: "deepseek", name: "DeepSeek", vision: false,
+                        marker: "thinking-off", askStall: .seconds(30))
+        let refreshed = stub(id: "deepseek", name: "DeepSeek", vision: false, marker: "thinking-high")
+        let engine = ChatEngine(provider: slow, history: history)
+
+        engine.attach(info)
+        engine.ask(Question(text: "what is this about?"))
+        try await waitUntil { engine.isStreaming }
+
+        engine.applySettings(using: { _ in refreshed }, settingsChoice: .deepseek)
+        XCTAssertEqual((engine.provider as? StubProvider)?.marker, "thinking-off",
+                       "the provider changed under a streaming answer")
+
+        engine.cancel()
+        try await waitUntil { !engine.isStreaming }
+        try await waitUntil {
+            (engine.provider as? StubProvider)?.marker == "thinking-high"
+        }
+    }
+
+    /// A provider that came from somewhere other than the menu — a preview, a
+    /// test double — maps to no choice, and must be left alone rather than
+    /// replaced by whatever Settings happens to say.
+    func testAWindowOnAnUnlistedProviderIsLeftAlone() async throws {
+        let unlisted = stub(id: "prose-page", name: "Prose")
+        let engine = ChatEngine(provider: unlisted, history: history)
+        engine.switchProvider(to: unlisted, isWindowOverride: true)
+
+        engine.applySettings(using: { _ in
+            XCTFail("an unlisted provider was rebuilt as something else")
+            return unlisted
+        }, settingsChoice: .deepseek)
+
+        XCTAssertEqual(engine.providerID, "prose-page")
+    }
+
     // MARK: Cancelling an attach
 
     func testCancellingAnAttachStopsItAndOffersARetry() async throws {

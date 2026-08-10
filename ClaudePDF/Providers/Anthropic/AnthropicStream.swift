@@ -8,6 +8,14 @@ import Foundation
 /// `display: "omitted"`), and — with server-side fallbacks enabled — `fallback`
 /// content blocks. Only an explicit `error` event throws.
 struct AnthropicStreamDecoder {
+    /// The `max_tokens` this stream was asked for, carried only so a cut-short
+    /// answer can name the ceiling it hit. Nothing else reads it.
+    let outputBudget: Int?
+
+    init(outputBudget: Int? = nil) {
+        self.outputBudget = outputBudget
+    }
+
     private(set) var inputTokens = 0
     private(set) var cacheReadTokens = 0
     private(set) var cacheWriteTokens = 0
@@ -52,13 +60,27 @@ struct AnthropicStreamDecoder {
             return []
 
         case "message_stop":
-            return [
+            var events: [ChatEvent] = [
                 .usage(inputTokens: inputTokens,
                        cacheReadTokens: cacheReadTokens,
                        cacheWriteTokens: cacheWriteTokens,
                        outputTokens: outputTokens),
-                .done,
             ]
+            // An answer that stopped because it ran out of room says so, and says
+            // which room: "128K" and "16K" are different bugs, and until now this
+            // path reported neither — the answer simply stopped mid-word.
+            if stopReason == "max_tokens" {
+                let limit = outputBudget.map { $0 % 1_000 == 0 ? "\($0 / 1_000)K-token " : "\($0)-token " } ?? ""
+                events.append(.notice("The answer hit the \(limit)output limit and was cut short."))
+            }
+            // Distinct from the above: the *document* plus the answer outgrew the
+            // model's context, which a bigger output budget cannot fix.
+            if stopReason == "model_context_window_exceeded" {
+                events.append(.notice("This document and the answer together outgrew the model's "
+                                      + "context window. Try a model with a larger one."))
+            }
+            events.append(.done)
+            return events
 
         case "error":
             throw AnthropicError.stream(
