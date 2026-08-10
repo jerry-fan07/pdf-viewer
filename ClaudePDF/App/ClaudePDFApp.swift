@@ -273,6 +273,15 @@ struct DocumentWindow: View {
                 .keyboardShortcut("f", modifiers: .command)
             Button("") { captureSelection() }
                 .keyboardShortcut("l", modifiers: .command)
+            // Start a new conversation about the same document (⇧⌘N). Nothing is
+            // re-prepared, so this is as cheap as it looks; it is in the composer's
+            // reach because it is the thing you press between two subjects.
+            Button("") {
+                engine.startNewThread()
+                chatVisible = true
+                engine.requestComposerFocus()
+            }
+            .keyboardShortcut("n", modifiers: [.command, .shift])
             if cropMode {
                 Button("") { cropMode = false }
                     .keyboardShortcut(.cancelAction)

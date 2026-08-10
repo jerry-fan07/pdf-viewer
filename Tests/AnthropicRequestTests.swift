@@ -120,6 +120,87 @@ final class AnthropicRequestTests: XCTestCase {
         XCTAssertTrue(prompt.contains("\\phi"), "the worked example is what makes it stick")
     }
 
+    // MARK: Conversations
+
+    private func conversation(_ exchanges: [(String, String)]) -> Conversation {
+        Conversation(turns: exchanges.map {
+            ConversationTurn(question: Question(text: $0.0), answer: $0.1)
+        })
+    }
+
+    /// The property the whole thread has to be compatible with: however long the
+    /// conversation gets, the serialized bytes up to and including the document
+    /// block are the ones the cache was written with.
+    func testTheDocumentBlockIsUntouchedByAConversationOfAnyLength() throws {
+        let encoder = AnthropicRequestBuilder.encoder()
+        let reference = try encoder.encode(AnthropicRequestBuilder.cachedPrefix(for: attachment)[0])
+
+        for length in 0...4 {
+            let thread = conversation((0..<length).map { ("q\($0)", "a\($0)") })
+            let messages = AnthropicRequestBuilder.messages(
+                question: loadedQuestion(), attachment: attachment, conversation: thread
+            )
+            XCTAssertEqual(try encoder.encode(messages[0].content[0]), reference,
+                           "the cached prefix moved at \(length) turns")
+        }
+    }
+
+    /// …and it has to be the *first* thing in the *first* message: a cache prefix
+    /// match starts at byte zero, so a turn replayed in front of the document
+    /// would silently cost a full cache write on every question.
+    func testTheConversationIsReplayedAfterTheDocumentNotBeforeIt() throws {
+        let messages = AnthropicRequestBuilder.messages(
+            question: plainQuestion(), attachment: attachment,
+            conversation: conversation([("what is a Kan extension?", "A universal…")])
+        )
+        XCTAssertEqual(messages.first?.content.first,
+                       .document(fileID: attachment.handle, title: attachment.title))
+        XCTAssertEqual(messages.map(\.role), ["user", "assistant", "user"])
+        XCTAssertEqual(messages[1].content, [.text("A universal…")])
+    }
+
+    func testEachTurnBecomesAUserAndAnAssistantMessageInOrder() throws {
+        let messages = AnthropicRequestBuilder.messages(
+            question: Question(text: "third"), attachment: attachment,
+            conversation: conversation([("first", "a1"), ("second", "a2")])
+        )
+        XCTAssertEqual(messages.map(\.role), ["user", "assistant", "user", "assistant", "user"])
+        XCTAssertEqual(messages[3].content, [.text("a2")])
+        XCTAssertEqual(messages[4].content.last, .text("third"))
+    }
+
+    /// Roles have to alternate and assistant turns have to say something, so a
+    /// question that produced no answer cannot be replayed as half a turn.
+    func testATurnWithNoAnswerIsDroppedWholeRatherThanLeftHalfThere() throws {
+        let thread = conversation([("asked", "answered"), ("stopped dead", "  ")])
+        let messages = AnthropicRequestBuilder.messages(
+            question: plainQuestion(), attachment: attachment, conversation: thread
+        )
+        XCTAssertEqual(messages.map(\.role), ["user", "assistant", "user"])
+        XCTAssertFalse(messages.contains { $0.content.contains(.text("stopped dead")) })
+    }
+
+    /// A crop is described rather than re-uploaded once it is in the past: ten
+    /// follow-ups must not re-send ten screenshots.
+    func testAPastCropIsDescribedRatherThanResent() throws {
+        let messages = AnthropicRequestBuilder.messages(
+            question: plainQuestion(), attachment: attachment,
+            conversation: Conversation(turns: [
+                ConversationTurn(question: loadedQuestion(), answer: "It reports ablations."),
+            ])
+        )
+        let replayed = messages[0].content
+        XCTAssertFalse(replayed.contains { if case .imagePNG = $0 { return true } else { return false } },
+                       "the past turn's screenshot was uploaded again")
+        XCTAssertTrue(replayed.contains { block in
+            if case .text(let text) = block { return text.contains("cropped a region from page 12") }
+            return false
+        }, replayed.debugDescription)
+        // The live question's crop is still sent in full — this is about the past.
+        let live = AnthropicRequestBuilder.volatileSuffix(for: loadedQuestion())
+        XCTAssertTrue(live.contains { if case .imagePNG = $0 { return true } else { return false } })
+    }
+
     // MARK: Request envelope
 
     func testRequestEnvelopeStreamsAndNamesTheSelectedModel() throws {
@@ -132,7 +213,7 @@ final class AnthropicRequestTests: XCTestCase {
         XCTAssertGreaterThan(body.maxTokens, 4096, "thinking counts against max_tokens on Opus 5")
         XCTAssertEqual(body.outputConfig.effort, AnthropicRequestBuilder.effort)
         XCTAssertEqual(body.fallbacks, "default")
-        XCTAssertEqual(body.messages.count, 1, "each question is an independent conversation")
+        XCTAssertEqual(body.messages.count, 1, "a question with no conversation behind it is one turn")
     }
 
     func testModelPageCaps() {

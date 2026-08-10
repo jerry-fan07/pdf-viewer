@@ -13,11 +13,35 @@ struct AnswerView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            ForEach(Array(MarkdownBlocks.parse(answer).enumerated()), id: \.offset) { _, block in
+            ForEach(Array(ParsedAnswer.blocks(answer).enumerated()), id: \.offset) { _, block in
                 BlockView(block: block)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// Blocks for an answer, parsed once per distinct answer text.
+///
+/// The transcript stack is deliberately eager and `QACard` is not `Equatable`, so every
+/// card's body re-runs whenever the engine touches `cards` — which streaming does on
+/// every delta. Parsing inside `body` therefore re-parsed *the whole transcript* per
+/// delta rather than the one answer that had changed, and the cost grew with the
+/// conversation instead of with the answer.
+///
+/// The cap-and-clear is `MathRenderer`'s, for `MathRenderer`'s reason: a growing answer
+/// is a new key on every delta, so the churn has to stay bounded. Kept here rather than
+/// in `MarkdownBlocks` so the parser stays pure and directly testable.
+@MainActor
+private enum ParsedAnswer {
+    private static var cache: [String: [MarkdownBlock]] = [:]
+
+    static func blocks(_ answer: String) -> [MarkdownBlock] {
+        if let hit = cache[answer] { return hit }
+        let parsed = MarkdownBlocks.parse(answer)
+        if cache.count > 256 { cache.removeAll() }
+        cache[answer] = parsed
+        return parsed
     }
 }
 

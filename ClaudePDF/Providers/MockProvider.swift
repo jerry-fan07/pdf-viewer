@@ -18,12 +18,20 @@ struct MockProvider: ChatProvider {
         )
     }
 
-    func ask(_ question: Question, in attachment: DocumentAttachment)
+    func ask(_ question: Question, in attachment: DocumentAttachment, conversation: Conversation)
         -> AsyncThrowingStream<ChatEvent, Error>
     {
         AsyncThrowingStream { continuation in
             let task = Task {
                 var preamble = "(mock) You asked: “\(question.text)”"
+                // Named so threading is visible offline: this is the count that
+                // goes back to a real provider, and that "New conversation" zeroes.
+                let turns = conversation.replayableTurns
+                if let last = turns.last {
+                    preamble += "\nFollowing \(turns.count) earlier question"
+                    preamble += turns.count == 1 ? "" : "s"
+                    preamble += " in this conversation, the last being “\(last.question.text)”."
+                }
                 if let selected = question.selectedText {
                     preamble += "\nAbout the selection: “\(selected.prefix(80))…”"
                 }

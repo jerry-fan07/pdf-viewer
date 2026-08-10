@@ -5,11 +5,13 @@ import UniformTypeIdentifiers
 /// Per-document Q&A history, persisted as one JSON file per document
 /// (PLAN.md §6).
 ///
-/// **History is display-only.** It is never re-sent to a provider: the context
-/// model is "every question is an independent conversation over a cached
-/// document" (PLAN.md §5), and quietly feeding old answers back would break both
-/// the independence and the byte-identical prefix the caching rests on. What it
-/// restores is the transcript the reader was looking at.
+/// **History is display-only.** Questions within a conversation do carry the ones
+/// before them, but that thread is held live in `ChatEngine.conversation` and is
+/// never reconstructed from this file: a reopened document has a freshly attached
+/// copy and no provider still remembers yesterday's thread, so restoring one would
+/// mean re-billing an old conversation to imply a continuity that doesn't exist.
+/// What this restores is the transcript the reader was looking at — read back as
+/// earlier conversations, with `threadID` marking where each one ended.
 ///
 /// Each card records the provider and model that answered it, because a restored
 /// transcript can predate a provider switch — the panel header only ever names
@@ -29,6 +31,10 @@ struct StoredHistory: Codable, Sendable, Equatable {
 struct StoredCard: Codable, Sendable, Equatable {
     var id: UUID
     var askedAt: Date
+    /// Which conversation the card belonged to, so the break between one and the
+    /// next survives a reopen. Optional because files written before conversations
+    /// were threaded have none; those are read back as one conversation.
+    var threadID: UUID?
     var questionText: String
     var selectedText: String?
     var selectedTextPage: Int?

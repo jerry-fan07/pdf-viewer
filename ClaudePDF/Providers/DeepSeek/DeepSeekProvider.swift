@@ -6,10 +6,12 @@ import Foundation
 ///           and keep it for the session. No upload, no server-side state.
 ///
 ///   ask:    POST /chat/completions with the frozen preamble + document as the
-///           `system` message and the question as the `user` message. DeepSeek's
-///           context caching is automatic on repeated prefixes, so questions 2..N
-///           read the document at ~50× less than the first — provided the prefix
-///           is byte-identical, which is the whole discipline of the builder.
+///           `system` message, then the reader's thread, then this question as the
+///           last `user` message. DeepSeek's context caching is automatic on
+///           repeated prefixes, so questions 2..N read the document at ~50× less
+///           than the first — provided the prefix is byte-identical, which is the
+///           whole discipline of the builder, and which a replayed thread has to
+///           preserve rather than break.
 ///
 /// Text-only: `supportsVision` is false until DeepSeek's public API documents
 /// image input. Crops degrade to the region's extracted text (PLAN.md §4).
@@ -63,13 +65,15 @@ struct DeepSeekProvider: ChatProvider {
 
     // MARK: Ask
 
-    func ask(_ question: Question, in attachment: DocumentAttachment)
+    func ask(_ question: Question, in attachment: DocumentAttachment, conversation: Conversation)
         -> AsyncThrowingStream<ChatEvent, Error>
     {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
-                    try await stream(question, in: attachment) { continuation.yield($0) }
+                    try await stream(question, in: attachment, conversation: conversation) {
+                        continuation.yield($0)
+                    }
                     continuation.finish()
                 } catch {
                     continuation.finish(throwing: error)
@@ -81,6 +85,7 @@ struct DeepSeekProvider: ChatProvider {
 
     private func stream(_ question: Question,
                         in attachment: DocumentAttachment,
+                        conversation: Conversation,
                         yield: (ChatEvent) -> Void) async throws
     {
         let apiKey = try Self.apiKey()
@@ -113,7 +118,8 @@ struct DeepSeekProvider: ChatProvider {
                 title: attachment.title,
                 model: model,
                 thinking: thinking,
-                canSeeImages: capabilities.supportsVision
+                canSeeImages: capabilities.supportsVision,
+                conversation: conversation
             )
         )
 

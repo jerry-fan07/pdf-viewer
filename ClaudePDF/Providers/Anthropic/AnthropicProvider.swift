@@ -6,10 +6,13 @@ import Foundation
 /// attach: upload the PDF once via the Files API → `file_id` (cached on disk, so
 /// reopening a document doesn't re-send its bytes).
 ///
-/// ask: a fresh, independent conversation per question —
+/// ask: the reader's thread, replayed over the cached document —
 ///   system: FROZEN prompt (byte-identical every time)
 ///   user:   [document block {file_id, citations, cache_control 1h}]  ← breakpoint
-///           …selection / crop / question, all *after* the breakpoint
+///           …the first question's selection / crop / text, all *after* it
+///   assistant / user …: the rest of the thread, then this question
+/// "New conversation" drops the thread and keeps the file_id, so a fresh thread
+/// costs nothing on the document side.
 /// streamed as SSE: `text_delta` → text, `citations_delta` → page-anchored chips.
 ///
 /// Guards: `stop_reason == "refusal"` surfaces as a readable error rather than an
@@ -96,13 +99,15 @@ struct AnthropicProvider: ChatProvider {
 
     // MARK: Ask
 
-    func ask(_ question: Question, in attachment: DocumentAttachment)
+    func ask(_ question: Question, in attachment: DocumentAttachment, conversation: Conversation)
         -> AsyncThrowingStream<ChatEvent, Error>
     {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
-                    try await stream(question, in: attachment) { continuation.yield($0) }
+                    try await stream(question, in: attachment, conversation: conversation) {
+                        continuation.yield($0)
+                    }
                     continuation.finish()
                 } catch {
                     continuation.finish(throwing: error)
@@ -114,6 +119,7 @@ struct AnthropicProvider: ChatProvider {
 
     private func stream(_ question: Question,
                         in attachment: DocumentAttachment,
+                        conversation: Conversation,
                         yield: (ChatEvent) -> Void) async throws
     {
         let apiKey = try Self.apiKey()
@@ -122,7 +128,8 @@ struct AnthropicProvider: ChatProvider {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
         request.httpBody = try AnthropicRequestBuilder.encoder().encode(
-            AnthropicRequestBuilder.body(question: question, attachment: attachment, model: model)
+            AnthropicRequestBuilder.body(question: question, attachment: attachment,
+                                         conversation: conversation, model: model)
         )
 
         let (bytes, response) = try await Self.session.bytes(for: request)
