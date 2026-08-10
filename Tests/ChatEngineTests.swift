@@ -365,6 +365,164 @@ final class ChatEngineTests: XCTestCase {
                        CropStaging.unrecognisedNotice(providerName: "DeepSeek"))
     }
 
+    // MARK: Conversations
+
+    /// The feature in one test: question 2 is asked knowing question 1.
+    func testAFollowUpCarriesTheQuestionsBeforeIt() async throws {
+        let engine = ChatEngine(provider: stub(id: "anthropic", name: "Claude (API)"),
+                                history: history)
+        engine.attach(info)
+
+        _ = try await ask(engine, "what is a Kan extension?")
+        _ = try await ask(engine, "and why does that matter here?")
+        _ = try await ask(engine, "give me an example")
+
+        let sent = await log.conversations()
+        XCTAssertEqual(sent.map(\.turns.count), [0, 1, 2],
+                       "each question has to be handed the ones before it")
+        XCTAssertEqual(sent[2].turns.map(\.question.text),
+                       ["what is a Kan extension?", "and why does that matter here?"])
+        XCTAssertTrue(sent[2].turns[0].answer.contains("answered by anthropic"),
+                      "the answer went into the thread, not just the question")
+    }
+
+    /// The other half of the feature. The document is the expensive part, so the
+    /// test that matters is not that the thread is gone but that the attachment
+    /// survived it: a new conversation must not re-upload, re-extract or re-prime.
+    func testANewConversationDropsTheThreadAndKeepsTheDocument() async throws {
+        let engine = ChatEngine(provider: stub(id: "anthropic", name: "Claude (API)"),
+                                history: history)
+        engine.attach(info)
+
+        _ = try await ask(engine, "what is a Kan extension?")
+        XCTAssertEqual(engine.conversation.turns.count, 1)
+
+        engine.startNewThread()
+        XCTAssertTrue(engine.conversation.isEmpty)
+
+        _ = try await ask(engine, "unrelated: who wrote this?")
+        let sent = await log.conversations()
+        XCTAssertEqual(sent.map(\.turns.count), [0, 0],
+                       "the new conversation was handed the old one's turns")
+        let attaches = await log.attaches("anthropic")
+        XCTAssertEqual(attaches, 1, "starting a conversation re-prepared the document")
+    }
+
+    /// A transcript is one column of cards, but not one conversation. The break is
+    /// drawn from these ids, so they are the thing to assert.
+    func testCardsAreStampedWithTheConversationTheyWereAskedIn() async throws {
+        let engine = ChatEngine(provider: stub(id: "anthropic", name: "Claude (API)"),
+                                history: history)
+        engine.attach(info)
+
+        _ = try await ask(engine, "first")
+        _ = try await ask(engine, "second")
+        engine.startNewThread()
+        _ = try await ask(engine, "third")
+
+        let threads = engine.cards.map(\.threadID)
+        XCTAssertEqual(threads[0], threads[1])
+        XCTAssertNotEqual(threads[1], threads[2])
+    }
+
+    /// Nothing to end, nothing to do: the affordance is hidden in that state and
+    /// pressing its shortcut anyway must not churn the thread id under the cards.
+    func testStartingAConversationWithNothingInItChangesNothing() async throws {
+        let engine = ChatEngine(provider: stub(id: "anthropic", name: "Claude (API)"),
+                                history: history)
+        engine.attach(info)
+        let before = engine.threadID
+        engine.startNewThread()
+        XCTAssertEqual(engine.threadID, before)
+    }
+
+    /// A handle is one provider's private bookmark. Crossing to another provider
+    /// has to keep the conversation and drop the bookmark — the new provider gets
+    /// the turns to replay instead.
+    func testSwitchingProviderKeepsTheConversationAndDropsTheHandle() async throws {
+        let claude = stub(id: "claude-code", name: "Claude (subscription)", session: "session")
+        let deepseek = stub(id: "deepseek", name: "DeepSeek", vision: false)
+        let engine = ChatEngine(provider: claude, history: history)
+        engine.attach(info)
+
+        _ = try await ask(engine, "what is a Kan extension?")
+        XCTAssertEqual(engine.conversation.handle, "session-0",
+                       "the provider's own thread state was not picked up")
+
+        engine.switchProvider(to: deepseek, isWindowOverride: true)
+        try await waitUntil { await self.log.attaches("deepseek") == 1 }
+        _ = try await ask(engine, "and in plain words?")
+
+        let toDeepSeek = await log.conversations("deepseek")
+        let handed = try XCTUnwrap(toDeepSeek.first)
+        XCTAssertNil(handed.handle, "a Claude Code session id was offered to DeepSeek")
+        XCTAssertEqual(handed.turns.count, 1, "the conversation was lost at the switch")
+        XCTAssertEqual(handed.unhandledTurns.count, 1,
+                       "with no handle, every turn has to be replayed")
+    }
+
+    /// The provider-side thread advances with each answer, and the engine has to
+    /// follow it rather than resuming the same session forever.
+    func testTheThreadHandleAdvancesWithEachAnswer() async throws {
+        let engine = ChatEngine(provider: stub(id: "claude-code", name: "Claude (subscription)",
+                                               session: "session"),
+                                history: history)
+        engine.attach(info)
+
+        _ = try await ask(engine, "first")
+        _ = try await ask(engine, "second")
+
+        XCTAssertEqual(engine.conversation.handle, "session-1")
+        XCTAssertEqual(engine.conversation.handledTurns, 2)
+        XCTAssertTrue(engine.conversation.unhandledTurns.isEmpty,
+                      "nothing needs replaying when the session already has it")
+
+        engine.startNewThread()
+        XCTAssertNil(engine.conversation.handle,
+                     "a new conversation resumed the old one's session")
+    }
+
+    /// A question that failed outright is not a turn: there is no answer to carry,
+    /// and replaying the empty one would put two user messages side by side.
+    func testAFailedQuestionDoesNotJoinTheConversation() async throws {
+        struct Boom: LocalizedError { var errorDescription: String? { "boom" } }
+        let engine = ChatEngine(provider: stub(id: "deepseek", name: "DeepSeek",
+                                               vision: false, failure: Boom()),
+                                history: history)
+        engine.attach(info)
+
+        _ = try await ask(engine, "what does page 3 say?")
+
+        XCTAssertEqual(engine.cards.last?.error, "boom")
+        XCTAssertTrue(engine.conversation.turns.isEmpty)
+    }
+
+    /// Stop mid-answer and what arrived is still on screen, so a follow-up that
+    /// had never heard of it would be the surprise. It is carried — and marked as
+    /// not being in any session, so the handle-based path replays it.
+    func testAStoppedAnswerIsStillPartOfTheConversation() async throws {
+        let name = "Claude (subscription)"
+        let engine = ChatEngine(provider: stub(id: "claude-code", name: name, session: "session"),
+                                history: history)
+        engine.attach(info)
+        _ = try await ask(engine, "what is a Kan extension?")
+        XCTAssertEqual(engine.conversation.handledTurns, 1)
+
+        // Same provider, now slow enough to interrupt: the attachment and the
+        // session it is threading are both untouched by the swap.
+        engine.switchProvider(to: stub(id: "claude-code", name: name,
+                                       askStall: .seconds(30), session: "session"))
+        engine.ask(Question(text: "summarise that"))
+        try await waitUntil { engine.cards.last?.answer.isEmpty == false }
+        engine.cancel()
+        try await waitUntil { !engine.isStreaming }
+
+        XCTAssertEqual(engine.conversation.turns.count, 2, "what arrived before Stop is gone")
+        XCTAssertEqual(engine.conversation.handledTurns, 1)
+        XCTAssertEqual(engine.conversation.unhandledTurns.map(\.question.text), ["summarise that"],
+                       "a stopped answer left no fork behind, so it has to be replayed instead")
+    }
+
     // MARK: Helpers
 
     /// A crop of an image-only page: pixels with no text layer under them.
@@ -384,14 +542,15 @@ final class ChatEngineTests: XCTestCase {
                       marker: String? = nil,
                       stall: Duration = .zero,
                       askStall: Duration = .zero,
-                      failure: Error? = nil) -> StubProvider
+                      failure: Error? = nil,
+                      session: String? = nil) -> StubProvider
     {
         StubProvider(
             id: id, displayName: name, modelName: model, marker: marker ?? id,
             capabilities: ProviderCapabilities(
                 supportsVision: vision, supportsNativePDF: vision, supportsCitations: vision
             ),
-            stall: stall, askStall: askStall, failure: failure, log: log
+            stall: stall, askStall: askStall, failure: failure, session: session, log: log
         )
     }
 
@@ -427,11 +586,22 @@ final class ChatEngineTests: XCTestCase {
 private actor AttachLog {
     private var attachCounts: [String: Int] = [:]
     private var cancelCounts: [String: Int] = [:]
+    /// Every conversation a provider was handed, in order — what the engine
+    /// actually sent is the only evidence that a thread is continuous.
+    private var asked: [(id: String, conversation: Conversation)] = []
 
     func recordAttach(_ id: String) { attachCounts[id, default: 0] += 1 }
     func recordCancel(_ id: String) { cancelCounts[id, default: 0] += 1 }
+    func recordAsk(_ id: String, conversation: Conversation) {
+        asked.append((id, conversation))
+    }
+
     func attaches(_ id: String) -> Int { attachCounts[id] ?? 0 }
     func cancels(_ id: String) -> Int { cancelCounts[id] ?? 0 }
+    func conversations() -> [Conversation] { asked.map(\.conversation) }
+    func conversations(_ id: String) -> [Conversation] {
+        asked.filter { $0.id == id }.map(\.conversation)
+    }
 }
 
 private struct StubProvider: ChatProvider {
@@ -446,6 +616,9 @@ private struct StubProvider: ChatProvider {
     let stall: Duration
     let askStall: Duration
     let failure: Error?
+    /// Non-nil for a provider that keeps the thread on its own side, the way the
+    /// Claude Code path keeps it in a forked CLI session.
+    let session: String?
     let log: AttachLog
 
     var pricing: TokenPricing? { nil }
@@ -473,11 +646,12 @@ private struct StubProvider: ChatProvider {
                                   sourceURL: document.fileURL)
     }
 
-    func ask(_ question: Question, in attachment: DocumentAttachment)
+    func ask(_ question: Question, in attachment: DocumentAttachment, conversation: Conversation)
         -> AsyncThrowingStream<ChatEvent, Error>
     {
         AsyncThrowingStream { continuation in
             let task = Task {
+                await log.recordAsk(id, conversation: conversation)
                 if askStall != .zero {
                     continuation.yield(.textDelta("…"))
                     try await Task.sleep(for: askStall)
@@ -485,6 +659,12 @@ private struct StubProvider: ChatProvider {
                 continuation.yield(.textDelta("answered by \(marker) from \(attachment.handle)"))
                 continuation.yield(.usage(inputTokens: 10, cacheReadTokens: 90,
                                           cacheWriteTokens: 0, outputTokens: 5))
+                // Stands in for the Claude Code session chain: a handle the engine
+                // is expected to carry into the next question of this conversation
+                // and to throw away when the reader starts a new one.
+                if let session {
+                    continuation.yield(.threadHandle("\(session)-\(conversation.turns.count)"))
+                }
                 continuation.yield(.done)
                 continuation.finish()
             }

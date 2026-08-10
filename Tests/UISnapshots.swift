@@ -107,6 +107,12 @@ final class UISnapshots: XCTestCase {
         // citations at all, pages named in the prose because the prompt asks for them.
         // Without it the shot only ever showed the one path that has citations, which
         // is how the strip came to be empty in the app for the other two.
+        //
+        // Asked in a *new* conversation, so the shot also has to show the break
+        // the panel draws between one and the next, and the header button that
+        // makes one — both of which are only visible with two threads on screen.
+        engine.startNewThread()
+        XCTAssertTrue(engine.conversation.isEmpty)
         engine.switchProvider(to: ProsePageProvider(), isWindowOverride: true)
         var third = Question(text: "Where is the cache breakpoint discussed?")
         third.pageHint = 1
@@ -277,7 +283,7 @@ private struct ProsePageProvider: ChatProvider {
                            sourceURL: document.fileURL)
     }
 
-    func ask(_ question: Question, in attachment: DocumentAttachment)
+    func ask(_ question: Question, in attachment: DocumentAttachment, conversation: Conversation)
         -> AsyncThrowingStream<ChatEvent, Error>
     {
         AsyncThrowingStream { continuation in

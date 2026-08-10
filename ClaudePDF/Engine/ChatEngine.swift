@@ -16,6 +16,13 @@ struct PendingSelection: Equatable {
 struct QACard: Identifiable {
     var id = UUID()
     var askedAt = Date()
+    /// Which conversation this card belongs to. Cards are one transcript on
+    /// screen, but only the ones sharing the *current* thread id were part of the
+    /// context the last answer was written against — so the panel draws a break
+    /// wherever this changes, rather than implying a continuity that isn't there.
+    /// Defaulting to a fresh id says "a conversation of one", which is what a card
+    /// built outside the engine is.
+    var threadID = UUID()
     let question: Question
     /// Who answered. Recorded per card because a restored transcript can predate
     /// a provider or model change — the panel header only names the current one.
@@ -84,6 +91,15 @@ final class ChatEngine: ObservableObject {
     /// `applySettings`.
     @Published private(set) var providerIsWindowOverride = false
 
+    /// The thread the next question will be asked inside: the turns since the
+    /// conversation started, and wherever a provider is keeping it for us.
+    /// Published because the composer and the New Conversation affordance both
+    /// change shape the moment a conversation has something in it.
+    @Published private(set) var conversation = Conversation()
+    /// Stamped onto every card asked in the current thread, so the transcript can
+    /// show where one conversation ended and the next began.
+    @Published private(set) var threadID = UUID()
+
     /// What the panel header names. The filename, not PDF metadata: titles in
     /// metadata are wrong or missing often enough that the name the reader chose
     /// for the file is the more reliable label.
@@ -142,12 +158,23 @@ final class ChatEngine: ObservableObject {
     /// The transcript stays: it is display-only and every card already records who
     /// answered it, so a switch reads as a change of voice rather than a reset.
     /// Refused while an answer is streaming — the same guard the Clear button uses.
+    ///
+    /// The conversation stays too, and changes shape to survive the crossing: its
+    /// turns are portable, so the new provider replays them, but a handle is a
+    /// session id belonging to the provider that issued it and means nothing to
+    /// anyone else. Dropping it is what makes the next question replay the thread
+    /// in full rather than resume a session that isn't theirs.
     func switchProvider(to newProvider: ChatProvider, isWindowOverride: Bool = false) {
         guard !isStreaming else { return }
         if isWindowOverride { providerIsWindowOverride = true }
 
         let previousKey = Self.attachmentKey(for: provider)
+        let previousID = provider.id
         provider = newProvider
+        if newProvider.id != previousID {
+            conversation.handle = nil
+            conversation.handledTurns = 0
+        }
         // A crop staged for a provider that could see it may be unreadable to the
         // new one — and vice versa (PLAN.md §4).
         restageCropForCurrentProvider()
@@ -281,6 +308,7 @@ final class ChatEngine: ObservableObject {
         // the other way to say "try again".
         if attachTask == nil { startAttach() }
         cards.append(QACard(
+            threadID: threadID,
             question: question,
             providerName: provider.displayName,
             modelName: provider.modelName,
@@ -288,13 +316,22 @@ final class ChatEngine: ObservableObject {
         ))
         let cardID = cards[cards.count - 1].id
         isStreaming = true
+        // The thread as it stood when the question was asked. Taken here rather
+        // than read inside the task, so a New Conversation pressed while this
+        // answer streams cannot retroactively change what was sent.
+        let asked = conversation
 
         askTask = Task {
+            var handle: String?
+            var failed = false
             do {
                 guard let attachment = try await attachTask?.value else {
                     throw ProviderError.attachmentMissing
                 }
-                for try await event in provider.ask(question, in: attachment) {
+                for try await event in provider.ask(question, in: attachment, conversation: asked) {
+                    // Thread state, not card state, and the one event `apply` has
+                    // nothing to do with.
+                    if case .threadHandle(let reported) = event { handle = reported }
                     apply(event, to: cardID)
                 }
                 // A cancelled AsyncThrowingStream ends iteration rather than
@@ -305,11 +342,13 @@ final class ChatEngine: ObservableObject {
             } catch is CancellationError {
                 update(cardID) { $0.error = "Cancelled" }
             } catch {
+                failed = true
                 update(cardID) { $0.error = error.localizedDescription }
             }
             // Also the path a cancelled or failed answer leaves by: whatever arrived
             // before it stopped is still an answer, and still points at pages.
             update(cardID) { $0.finish() }
+            if !failed { record(cardID, threadHandle: handle) }
             isStreaming = false
             // A Settings change made while this answer streamed was held, not
             // dropped: apply it now, so the next question is asked the new way.
@@ -322,14 +361,60 @@ final class ChatEngine: ObservableObject {
         }
     }
 
+    /// Fold a finished answer into the thread the next question will carry.
+    ///
+    /// A question that produced no text at all is not a turn: replaying an empty
+    /// answer would leave two user messages side by side, which both API paths
+    /// reject. A question that was stopped part-way *is* one — the reader read
+    /// what arrived, so a follow-up that had never heard of it would be the
+    /// surprise. Its fork is usually missing, which `handledTurns` records so the
+    /// Claude Code path replays the difference instead of losing it.
+    ///
+    /// The card's own thread id guards the whole thing: if the reader started a
+    /// new conversation while this was streaming, the thread this answer belongs
+    /// to is gone, and appending to the one that replaced it would smuggle the old
+    /// context into a conversation the reader asked to be free of it.
+    private func record(_ cardID: UUID, threadHandle handle: String?) {
+        guard let card = cards.first(where: { $0.id == cardID }),
+              card.threadID == threadID else { return }
+
+        if !card.answer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            conversation.turns.append(ConversationTurn(question: card.question, answer: card.answer))
+        }
+        if let handle {
+            conversation.handle = handle
+            conversation.handledTurns = conversation.turns.count
+        }
+    }
+
     func cancel() {
         askTask?.cancel()
+    }
+
+    /// Start a fresh conversation about the same document.
+    ///
+    /// This is the counterweight to threading: questions carry the ones before
+    /// them, so there has to be a way to say "forget that, I'm on something else"
+    /// without paying to prepare the document again. Only the thread goes — the
+    /// attachment, and with it the uploaded file, the primed session and the
+    /// cached prefix, is untouched, so the first question of the new conversation
+    /// is as cheap as the second question of the old one.
+    ///
+    /// The transcript stays on screen too. It is what the reader was reading, and
+    /// the panel marks the break rather than hiding the fact that it happened.
+    func startNewThread() {
+        guard !isStreaming, !conversation.isEmpty else { return }
+        conversation = Conversation()
+        threadID = UUID()
     }
 
     /// Drop this document's transcript, on screen and on disk.
     func clearHistory() {
         guard !isStreaming else { return }
         cards.removeAll()
+        // Nothing left to be continuous with.
+        conversation = Conversation()
+        threadID = UUID()
         guard let documentURL else { return }
         let history = self.history
         Task.detached(priority: .utility) { history.clear(for: documentURL) }
@@ -410,6 +495,8 @@ final class ChatEngine: ObservableObject {
                 )
             case .notice(let text):
                 if !card.notices.contains(text) { card.notices.append(text) }
+            case .threadHandle:
+                break   // taken out of the stream by `ask`: it belongs to the thread
             case .done:
                 card.finish()
             }
@@ -423,11 +510,21 @@ final class ChatEngine: ObservableObject {
 
     // MARK: History
 
+    /// A restored transcript is read back as earlier conversations, never as the
+    /// one the reader is in. History stays display-only (see `HistoryStore`): the
+    /// document has just been attached afresh, nothing on the provider's side
+    /// remembers yesterday's thread, and quietly re-billing an old conversation to
+    /// give the impression that something does would be the worse surprise. The
+    /// panel draws the break, so the transcript says which is which.
     private func restoreHistory(for url: URL) {
         let history = self.history
         Task.detached(priority: .utility) {
             guard let stored = history.load(for: url) else { return }
-            let restored = stored.cards.map(QACard.init(stored:))
+            // One thread id for anything written before threads existed, so an old
+            // transcript reads as the single conversation it was, not as one
+            // conversation per question.
+            let legacyThread = UUID()
+            let restored = stored.cards.map { QACard(stored: $0, fallbackThreadID: legacyThread) }
             await MainActor.run {
                 // Anything asked while the file was being read wins — appending
                 // the restored cards in front keeps chronological order.
@@ -464,6 +561,7 @@ extension StoredCard {
         self.init(
             id: card.id,
             askedAt: card.askedAt,
+            threadID: card.threadID,
             questionText: card.question.text,
             selectedText: card.question.selectedText,
             selectedTextPage: card.question.selectedTextPage,
@@ -487,7 +585,10 @@ extension StoredCard {
 extension QACard {
     /// A restored card carries no `pricing`: its cost was computed when it was
     /// asked and is replayed, never recomputed.
-    init(stored: StoredCard) {
+    ///
+    /// `fallbackThreadID` is for files written before conversations were threaded;
+    /// one shared id per file groups them as the single conversation they were.
+    init(stored: StoredCard, fallbackThreadID: UUID = UUID()) {
         var question = Question(text: stored.questionText)
         question.selectedText = stored.selectedText
         question.selectedTextPage = stored.selectedTextPage
@@ -497,6 +598,7 @@ extension QACard {
         self.init(
             id: stored.id,
             askedAt: stored.askedAt,
+            threadID: stored.threadID ?? fallbackThreadID,
             question: question,
             providerName: stored.providerName,
             modelName: stored.modelName,

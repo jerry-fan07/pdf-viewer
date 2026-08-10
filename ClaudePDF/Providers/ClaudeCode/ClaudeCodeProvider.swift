@@ -10,10 +10,15 @@ import Foundation
 ///       --allowedTools Read --add-dir <document dir>
 ///     → session_id, read off any record in the stream.
 ///
-///   ask (every question, strictly independent):
-///     claude -p "<question>" --resume <primed> --fork-session …
-///     → forking branches into a NEW session, so the primed one is never mutated:
-///       questions reuse the cached PDF read and stay ignorant of each other.
+///   ask (every question):
+///     claude -p "<question>" --resume <thread ?? primed> --fork-session …
+///     → forking branches into a NEW session, so the session it resumed is never
+///       mutated. The first question of a conversation forks the primed session;
+///       every question after it forks the fork the last answer left behind, which
+///       is how the thread accumulates while the primed session stays pristine and
+///       its cached PDF read keeps being reused. Verified against CLI 2.1.223: a
+///       fork of a fork resumes with its parent's context, and the `session_id` on
+///       the first stream record is the new fork's, not the resumed one's.
 struct ClaudeCodeProvider: ChatProvider {
     let id = "claude-code"
     let displayName = "Claude (subscription)"
@@ -66,13 +71,15 @@ struct ClaudeCodeProvider: ChatProvider {
 
     // MARK: Ask
 
-    func ask(_ question: Question, in attachment: DocumentAttachment)
+    func ask(_ question: Question, in attachment: DocumentAttachment, conversation: Conversation)
         -> AsyncThrowingStream<ChatEvent, Error>
     {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
-                    try await run(question, in: attachment) { continuation.yield($0) }
+                    try await run(question, in: attachment, conversation: conversation) {
+                        continuation.yield($0)
+                    }
                     continuation.finish()
                 } catch {
                     continuation.finish(throwing: error)
@@ -84,6 +91,7 @@ struct ClaudeCodeProvider: ChatProvider {
 
     private func run(_ question: Question,
                      in attachment: DocumentAttachment,
+                     conversation: Conversation,
                      yield: (ChatEvent) -> Void) async throws
     {
         let executable = try ClaudeCodeCLI.locate()
@@ -107,11 +115,18 @@ struct ClaudeCodeProvider: ChatProvider {
             if let cropPath { try? FileManager.default.removeItem(atPath: cropPath) }
         }
 
+        // The thread is a chain of forks: the first question of a conversation
+        // forks the primed session, and each answer after that forks the one the
+        // previous answer created. The primed session is never resumed directly
+        // twice, so it stays as clean as the Phase 0 spike left it, and "New
+        // conversation" is just this handle going away — the next question forks
+        // the primed session again and the cached PDF read is still there.
         var arguments = baseArguments(
-            prompt: ClaudeCodePrompt.ask(question, cropPath: cropPath),
+            prompt: ClaudeCodePrompt.ask(question, cropPath: cropPath,
+                                         replaying: conversation.unhandledTurns),
             readableDirectories: readable
         )
-        arguments += ["--resume", attachment.handle, "--fork-session"]
+        arguments += ["--resume", conversation.handle ?? attachment.handle, "--fork-session"]
 
         var decoder = ClaudeCodeStreamDecoder()
         do {
@@ -124,11 +139,19 @@ struct ClaudeCodeProvider: ChatProvider {
             }
         } catch let error as ClaudeCodeError {
             // A primed session that the CLI can no longer resume (pruned, or a
-            // different machine) shouldn't wedge the document forever.
+            // different machine) shouldn't wedge the document forever. Only the
+            // primed session is cached on disk, so that is the one to drop —
+            // a dead thread handle is discarded by the engine either way.
             if case .cliFailed = error, let source = attachment.sourceURL {
                 Self.sessionCache.invalidate(source)
             }
             throw error
+        }
+
+        // Reported last, and only on a clean run: this is where the thread now
+        // lives, and a run that threw left nothing worth resuming.
+        if let forked = decoder.sessionID {
+            yield(.threadHandle(forked))
         }
     }
 

@@ -42,6 +42,9 @@ struct ChatPanelView: View {
                     .foregroundStyle(PanelInk.faint)
                 providerMenu
                 Spacer(minLength: 8)
+                if !engine.conversation.isEmpty {
+                    newConversationButton
+                }
                 if engine.hasHistory {
                     clearButton
                 }
@@ -72,6 +75,24 @@ struct ChatPanelView: View {
             summary += " · " + TokenPricing.format(cost)
         }
         return summary
+    }
+
+    /// Drops what the next question would otherwise carry, and nothing else — the
+    /// document stays prepared, so this costs nothing and the transcript above it
+    /// stays where it is. Shown only once there is a conversation to end.
+    private var newConversationButton: some View {
+        Button {
+            engine.startNewThread()
+        } label: {
+            Image(systemName: "square.and.pencil")
+                .font(.system(size: 10))
+                .foregroundStyle(PanelInk.faint)
+        }
+        .buttonStyle(.plain)
+        .disabled(engine.isStreaming)
+        .help("New conversation — the next question starts fresh instead of "
+              + "following these \(engine.conversation.turns.count). The document stays "
+              + "prepared, so nothing is re-uploaded and no cache is re-paid.")
     }
 
     private var clearButton: some View {
@@ -115,7 +136,8 @@ struct ChatPanelView: View {
             // Never let a cache write happen silently (PLAN.md §7).
             Text("Switching re-prepares this document for the new provider — the "
                  + "first question after that pays a fresh cache write. Switching "
-                 + "back to one it is already prepared for is free.")
+                 + "back to one it is already prepared for is free. The conversation "
+                 + "carries over either way.")
         } label: {
             Text("· \(engine.providerName)")
                 .font(.system(size: 11))
@@ -241,37 +263,102 @@ struct ChatPanelView: View {
 
     // MARK: Transcript
 
+    /// One row of the transcript, carrying where it sits in its conversation.
+    ///
+    /// Worked out here rather than inside the row builder, and this is not a
+    /// tidying: `LazyVStack` builds rows on demand *while the reader scrolls*, so
+    /// a row that reaches for `cards[index - 1]` is indexing an array the engine
+    /// has been mutating in the meantime — appending deltas, prepending a restored
+    /// transcript, or emptying it entirely in `clearHistory`. Out of range there is
+    /// a trap, and it fires on the scroll rather than on the edit that caused it.
+    /// A row that knows its own place needs no neighbours.
+    ///
+    /// Internal rather than private so the boundaries can be tested directly —
+    /// where a conversation starts and ends is what the panel draws, and it is
+    /// worth asserting somewhere other than by eye.
+    struct TranscriptRow: Identifiable {
+        let card: QACard
+        let isFirstRow: Bool
+        let startsThread: Bool
+        let endsThread: Bool
+
+        var id: UUID { card.id }
+    }
+
+    var transcriptRows: [TranscriptRow] {
+        let cards = engine.cards
+        return cards.indices.map { index in
+            let thread = cards[index].threadID
+            return TranscriptRow(
+                card: cards[index],
+                isFirstRow: index == cards.startIndex,
+                startsThread: index == cards.startIndex || cards[index - 1].threadID != thread,
+                endsThread: index == cards.index(before: cards.endIndex)
+                    || cards[index + 1].threadID != thread
+            )
+        }
+    }
+
     private var transcript: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 0) {
+                // Deliberately *not* lazy. Rows arrive laid out rather than being
+                // measured on demand, which costs a few milliseconds up front on a
+                // long transcript and buys the one thing a reading UI cannot do
+                // without: scrolling while an answer streams. See `transcript`.
+                VStack(alignment: .leading, spacing: 0) {
                     statusItems
-                    let cards = engine.cards
-                    ForEach(Array(cards.enumerated()), id: \.element.id) { index, card in
-                        if index > 0 {
-                            Rectangle().fill(PanelInk.hairline)
-                                .frame(height: 1)
-                                .padding(.leading, AnswerRail.width)
-                                .padding(.trailing, 24)
+                    ForEach(transcriptRows) { row in
+                        if !row.isFirstRow {
+                            if row.startsThread {
+                                // A stronger break than the hairline between two
+                                // answers, because it means something stronger:
+                                // nothing above it was in front of the model when
+                                // the answers below it were written.
+                                ThreadBreak()
+                            } else {
+                                Rectangle().fill(PanelInk.hairline)
+                                    .frame(height: 1)
+                                    .padding(.leading, AnswerRail.width)
+                                    .padding(.trailing, 24)
+                            }
                         }
-                        QACardView(card: card, viewer: viewer)
+                        QACardView(card: row.card, viewer: viewer)
                             .padding(.leading, AnswerRail.width)
                             .padding(.trailing, 24)
                             .padding(.vertical, 18)
                             .overlay(alignment: .topLeading) {
-                                AnswerRail(isFirst: index == 0,
-                                           isLast: index == cards.count - 1)
+                                // The rail threads a conversation, so it restarts
+                                // with one: each thread gets its own solid first
+                                // dot, and the line breaks where they do.
+                                AnswerRail(isFirst: row.startsThread, isLast: row.endsThread)
                             }
-                            .id(card.id)
+                            .id(row.id)
                     }
                 }
             }
-            .onChange(of: engine.cards.last?.answer.count ?? 0) {
-                if let last = engine.cards.last {
-                    proxy.scrollTo(last.id, anchor: .bottom)
-                }
+            // Follow the transcript when there is somewhere new to be — a question
+            // just asked, an answer just finished — and not on every character in
+            // between.
+            //
+            // Per-delta following was `scrollTo` dozens of times a second, and
+            // inside a `LazyVStack` each call makes the stack resolve placements
+            // for rows whose heights are still growing; resolving them realizes
+            // more rows, which changes the height again. On its own that is merely
+            // expensive. With the reader dragging the same scroll view it is a
+            // fight over the offset the reader cannot win: every 20 ms the view
+            // is dragged back to the bottom, which is most of why scrolling during
+            // an answer felt broken. Twice an answer does the same job.
+            .onChange(of: engine.cards.count) { follow(proxy) }
+            .onChange(of: engine.isStreaming) {
+                if !engine.isStreaming { follow(proxy) }
             }
         }
+    }
+
+    private func follow(_ proxy: ScrollViewProxy) {
+        guard let last = engine.cards.last else { return }
+        proxy.scrollTo(last.id, anchor: .bottom)
     }
 
     /// Everything that is not an answer — the unconfigured-provider notice, attach
@@ -378,8 +465,12 @@ struct ChatPanelView: View {
         .padding(EdgeInsets(top: 12, leading: 24, bottom: 14, trailing: 24))
     }
 
+    /// The one place the reader is told, before typing, whether this question
+    /// will stand alone or follow the ones above it.
     private var askPrompt: Text {
-        Text("Ask…").font(.system(size: 14)).foregroundStyle(PanelInk.fainter)
+        Text(engine.conversation.isEmpty ? "Ask…" : "Ask a follow-up…")
+            .font(.system(size: 14))
+            .foregroundStyle(PanelInk.fainter)
     }
 
     private var canSubmit: Bool {
@@ -411,12 +502,40 @@ struct ChatPanelView: View {
     }
 }
 
+// MARK: - Thread break
+
+/// Where one conversation ended and the next began — pressed by the reader, or
+/// created by reopening the document onto a transcript the new conversation
+/// cannot see. Full width, rail gutter included, because the rail is exactly what
+/// it interrupts.
+///
+/// Internal rather than private so the snapshot harness renders the real thing.
+struct ThreadBreak: View {
+    var body: some View {
+        HStack(spacing: 8) {
+            rule
+            Text("new conversation")
+                .font(.system(size: 10))
+                .kerning(0.3)
+                .foregroundStyle(PanelInk.fainter)
+            rule
+        }
+        .padding(EdgeInsets(top: 6, leading: 24, bottom: 6, trailing: 24))
+        .help("Questions below this line don't carry the ones above it. The "
+              + "document is still the same prepared copy.")
+    }
+
+    private var rule: some View {
+        Rectangle().fill(PanelInk.hairlineStrong).frame(height: 1)
+    }
+}
+
 // MARK: - Timeline rail
 
 /// The dot-and-line thread down the left gutter: a solid dot where the
 /// conversation started, hollow dots in between, a larger hollow dot on the
 /// latest answer. Drawn per row (overlaying it), because a single line behind a
-/// `LazyVStack` would not survive lazy layout.
+/// stack would not have survived the lazy layout this used to use.
 private struct AnswerRail: View {
     let isFirst: Bool
     let isLast: Bool
