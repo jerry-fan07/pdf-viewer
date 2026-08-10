@@ -28,7 +28,14 @@ struct ClaudeCodeProvider: ChatProvider {
         supportsVision: true, supportsNativePDF: true, supportsCitations: false
     )
 
+    var model: ClaudeCodeModel = .cliDefault
     var effort: ClaudeCodeEffort = .cliDefault
+
+    /// Nil while the model is the CLI's own choice — see `ClaudeCodeModel.badgeName`.
+    /// This also feeds `ChatEngine`'s attachment key, so picking a model re-attaches:
+    /// harmless here, since the primed session is cached per document and comes
+    /// straight back without a second read of the PDF.
+    var modelName: String? { model.badgeName }
 
     private static let sessionCache = DocumentHandleCache(namespace: "claudeCode.sessionIDs")
 
@@ -162,6 +169,7 @@ struct ClaudeCodeProvider: ChatProvider {
         for directory in Set(readableDirectories.map(\.standardizedFileURL.path)).sorted() {
             arguments += ["--add-dir", directory]
         }
+        arguments += model.arguments
         arguments += effort.arguments
         return arguments
     }

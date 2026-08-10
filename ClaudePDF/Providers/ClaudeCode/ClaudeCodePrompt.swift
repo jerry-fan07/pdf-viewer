@@ -1,5 +1,50 @@
 import Foundation
 
+/// Which model the CLI answers on. Raw values are the CLI's own public aliases
+/// rather than pinned ids (`claude --model` takes `fable`, `opus`, `sonnet` or
+/// `haiku`), so each one keeps tracking the latest of its line without this
+/// enum having to be edited every release.
+///
+/// Verified against CLI 2.1.226 that `--model` is honoured on the forked ask,
+/// not just on a fresh session: a session primed on Haiku and forked with
+/// `--model sonnet` reported `claude-sonnet-5` in its init, assistant and
+/// result records. Without that the picker would silently do nothing, since
+/// every question on this path goes through `--resume … --fork-session`.
+enum ClaudeCodeModel: String, CaseIterable, Identifiable, Sendable {
+    /// Pass no `--model` at all and answer on whatever `~/.claude/settings.json`
+    /// already says — what this path did before there was a picker.
+    case cliDefault = ""
+    case fable, opus, sonnet, haiku
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .cliDefault: return "CLI default"
+        case .fable: return "Fable (most capable)"
+        case .opus: return "Opus"
+        case .sonnet: return "Sonnet"
+        case .haiku: return "Haiku (fastest)"
+        }
+    }
+
+    /// What the per-answer badge records, so a card says which voice answered it.
+    /// Nil on `.cliDefault`, where the app genuinely does not know: the model is
+    /// the CLI's business and can change under it between questions.
+    var badgeName: String? {
+        switch self {
+        case .cliDefault: return nil
+        case .fable: return "Fable"
+        case .opus: return "Opus"
+        case .sonnet: return "Sonnet"
+        case .haiku: return "Haiku"
+        }
+    }
+
+    /// Arguments to append; empty for the CLI's own default.
+    var arguments: [String] { self == .cliDefault ? [] : ["--model", rawValue] }
+}
+
 /// Effort is the documented latency lever for this path: the Phase 0 spike
 /// measured 20–32 s per question at CLI defaults (PLAN.md §5.3).
 enum ClaudeCodeEffort: String, CaseIterable, Identifiable, Sendable {

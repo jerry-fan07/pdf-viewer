@@ -111,9 +111,25 @@ struct DeepSeekChatRequest: Encodable {
 /// the layout DeepSeek's own caching guide demonstrates and it avoids two
 /// consecutive `user` turns (superseded — see PLAN.md §5.2).
 enum DeepSeekRequestBuilder {
-    /// Thinking tokens are billed as output, so this is a ceiling on cost as much
-    /// as on length. The models accept up to 384K.
-    static let maxTokens = 16_000
+    /// Thinking tokens are billed as output *and* spend the same `max_tokens`
+    /// budget the answer does, so a flat 16K ceiling truncated answers whenever
+    /// reasoning ran long — the answer itself is a few hundred tokens, and it is
+    /// the part that gets cut. The budget therefore scales with the effort that
+    /// spends it. A ceiling still exists, because an unbounded runaway is a
+    /// runaway bill; but headroom left unused is free, since only tokens actually
+    /// produced are billed. The models accept up to 384K, but the ceiling here is
+    /// 256K, and it cannot simply be raised to the cap: prompt + `max_tokens` has
+    /// to fit the 1M context, and the extractor truncates documents at ~690K.
+    /// 690K + 256K clears it; 690K + 384K would be refused outright, turning a
+    /// cut-short answer into no answer at all on a very large document.
+    static func maxTokens(for thinking: DeepSeekThinking) -> Int {
+        switch thinking {
+        case .off: return 16_000    // answer only — nothing else to share it with
+        case .low: return 64_000
+        case .high: return 128_000
+        case .max: return 256_000
+        }
+    }
 
     /// FROZEN. Never interpolate anything into this string — it opens the cached
     /// prefix, so one changed byte re-prices every question in every document.
@@ -234,7 +250,7 @@ enum DeepSeekRequestBuilder {
                                canSeeImages: canSeeImages, conversation: conversation),
             stream: true,
             streamOptions: .init(),
-            maxTokens: maxTokens,
+            maxTokens: maxTokens(for: thinking),
             thinking: .init(type: thinking.isEnabled ? "enabled" : "disabled"),
             reasoningEffort: thinking.reasoningEffort
         )

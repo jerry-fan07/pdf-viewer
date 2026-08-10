@@ -84,6 +84,7 @@ enum AppSettings {
     static let appearanceKey = "viewer.pdfAppearance"
     static let anthropicModelKey = "anthropic.model"
     static let providerChoiceKey = "provider.choice"
+    static let claudeCodeModelKey = "claudeCode.model"
     static let claudeCodeEffortKey = "claudeCode.effort"
     static let deepseekModelKey = "deepseek.model"
     static let deepseekThinkingKey = "deepseek.thinking"
@@ -114,6 +115,13 @@ enum AppSettings {
 
     static var providerChoice: ProviderChoice {
         ProviderChoice(rawValue: UserDefaults.standard.string(forKey: providerChoiceKey) ?? "") ?? .automatic
+    }
+
+    /// Defaults to the CLI's own model rather than pinning one here: the whole
+    /// point of this path is that auth and configuration already live in Claude
+    /// Code, and an app-side default would quietly overrule it.
+    static var claudeCodeModel: ClaudeCodeModel {
+        ClaudeCodeModel(rawValue: UserDefaults.standard.string(forKey: claudeCodeModelKey) ?? "") ?? .cliDefault
     }
 
     static var claudeCodeEffort: ClaudeCodeEffort {
@@ -162,7 +170,7 @@ enum ProviderFactory {
     }
 
     private static func claudeCode() -> ChatProvider {
-        ClaudeCodeProvider(effort: AppSettings.claudeCodeEffort)
+        ClaudeCodeProvider(model: AppSettings.claudeCodeModel, effort: AppSettings.claudeCodeEffort)
     }
 
     private static func anthropic() -> ChatProvider {

@@ -121,8 +121,9 @@ protocol ChatProvider: Sendable {
     var capabilities: ProviderCapabilities { get }
 
     /// The model this provider was built with, for the per-answer badge. Nil
-    /// where the app doesn't choose one — the subscription path answers on
-    /// whatever model the CLI is configured for.
+    /// where the app doesn't choose one — the mock, and the subscription path
+    /// while its model is left at "CLI default", where the answer comes back on
+    /// whatever Claude Code itself is configured for.
     var modelName: String? { get }
 
     /// Per-token prices, for the per-answer cost line. Nil where there is no

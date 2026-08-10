@@ -22,7 +22,7 @@ Tests live in `Tests` and run against the app as their test host — no GUI auto
 
 ## Status
 
-All eight phases are done: the viewer, selection/crop, all three providers (Anthropic API, Claude subscription via the Claude Code CLI, DeepSeek), the polish pass — per-document history, per-answer cost, OCR for scanned pages, and an app icon — live provider switching, and continuous conversations, with **333 unit tests**. The subscription path has been verified live; the two API paths are code-complete with their live cache-hit criteria still unverified (both need an API key).
+All eight phases are done: the viewer, selection/crop, all three providers (Anthropic API, Claude subscription via the Claude Code CLI, DeepSeek), the polish pass — per-document history, per-answer cost, OCR for scanned pages, and an app icon — live provider switching, and continuous conversations, with **338 unit tests**. The subscription path has been verified live; the two API paths are code-complete with their live cache-hit criteria still unverified (both need an API key).
 
 Questions are continuous: each one carries the conversation before it, replayed *after* the cached document so the prefix the caching rests on never moves. **New conversation** (⇧⌘N, or the button in the panel header) drops the thread and keeps the prepared document, so a fresh conversation re-uploads nothing and re-pays no cache write. The transcript marks where one conversation ended and the next began — including the break that reopening a document creates, since a restored transcript is what you were reading, not context the model has.
 

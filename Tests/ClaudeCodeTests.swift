@@ -201,6 +201,34 @@ final class ClaudeCodePromptTests: XCTestCase {
         XCTAssertEqual(ClaudeCodeEffort.low.arguments, ["--effort", "low"])
         XCTAssertEqual(ClaudeCodeEffort.max.arguments, ["--effort", "max"])
     }
+
+    func testModelMapsToCLIArguments() {
+        XCTAssertEqual(ClaudeCodeModel.cliDefault.arguments, [],
+                       "the default must pass no --model, leaving the CLI's own choice alone")
+        XCTAssertEqual(ClaudeCodeModel.fable.arguments, ["--model", "fable"])
+        XCTAssertEqual(ClaudeCodeModel.opus.arguments, ["--model", "opus"])
+        XCTAssertEqual(ClaudeCodeModel.sonnet.arguments, ["--model", "sonnet"])
+        XCTAssertEqual(ClaudeCodeModel.haiku.arguments, ["--model", "haiku"])
+    }
+
+    /// Raw values are the CLI's public aliases, not pinned model ids: a dated id
+    /// here would go stale on the next release, and `claude --model` documents
+    /// exactly these four.
+    func testModelRawValuesAreCLIAliases() {
+        XCTAssertEqual(Set(ClaudeCodeModel.allCases.map(\.rawValue)),
+                       ["", "fable", "opus", "sonnet", "haiku"])
+        for model in ClaudeCodeModel.allCases where model != .cliDefault {
+            XCTAssertFalse(model.rawValue.hasPrefix("claude-"), "\(model.rawValue) is pinned")
+        }
+    }
+
+    /// The badge says which voice answered, and can only do that when the app
+    /// picked the model — on "CLI default" it genuinely doesn't know.
+    func testOnlyThePickedModelReachesTheAnswerBadge() {
+        XCTAssertNil(ClaudeCodeProvider(model: .cliDefault).modelName)
+        XCTAssertEqual(ClaudeCodeProvider(model: .fable).modelName, "Fable")
+        XCTAssertEqual(ClaudeCodeProvider(model: .haiku).modelName, "Haiku")
+    }
 }
 
 final class ClaudeCodeCLITests: XCTestCase {
