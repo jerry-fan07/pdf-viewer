@@ -4,14 +4,24 @@
 # ClaudePDF.xcodeproj is generated from project.yml and gitignored, so every
 # fresh workspace has to generate it before Xcode or xcodebuild can do anything.
 setup = "xcodegen generate"
-# Each workspace builds into its own DerivedData and launches its own instance,
-# so several can run side by side.
+# Each workspace builds into its own DerivedData, so several can build at once.
 run_mode = "concurrent"
 
 [scripts.run.app]
 # xcodebuild only exists on the Mac — this app can't run in a cloud workspace.
 available_in = [ "local" ]
 default = true
+icon = "play"
+# Every branch installs over the same ~/Applications/ClaudePDF.app and runs from
+# there, because the Dock keys its tiles on the bundle's path: launching straight
+# out of a workspace's DerivedData gives every branch a Dock icon of its own and
+# leaves a pinned icon permanently dark. See Scripts/dev-install.sh.
+command = "bash Scripts/dev-install.sh"
+
+[scripts.run.app-isolated]
+# The old behaviour: run out of this workspace's DerivedData, so two branches can
+# be up at once. They get one Dock tile each — that is the price of side by side.
+available_in = [ "local" ]
 icon = "play"
 command = "xcodegen generate && xcodebuild -project ClaudePDF.xcodeproj -scheme ClaudePDF -configuration Debug -destination 'platform=macOS' -derivedDataPath DerivedData build && exec ./DerivedData/Build/Products/Debug/ClaudePDF.app/Contents/MacOS/ClaudePDF"
 
