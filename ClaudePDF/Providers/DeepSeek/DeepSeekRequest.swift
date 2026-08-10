@@ -193,15 +193,31 @@ enum DeepSeekRequestBuilder {
         return parts.joined(separator: "\n\n")
     }
 
+    /// System prefix, then the thread, then this question.
+    ///
+    /// The thread sits after the document for the same reason it does on the
+    /// Anthropic path: everything before the first user turn is unchanged from
+    /// question 1 to question 20, so the automatic prefix cache still hits. Past
+    /// turns are re-rendered by `userMessage` — the same function, from the same
+    /// stored `Question` — rather than from anything the viewer is showing now,
+    /// which is what makes each request's prefix a byte-prefix of the next one's.
     static func messages(question: Question,
                          document: ExtractedDocument,
                          title: String,
-                         canSeeImages: Bool) -> [DeepSeekChatRequest.Message]
+                         canSeeImages: Bool,
+                         conversation: Conversation = Conversation()) -> [DeepSeekChatRequest.Message]
     {
-        [
+        var messages: [DeepSeekChatRequest.Message] = [
             .init(role: "system", content: systemMessage(document: document, title: title)),
-            .init(role: "user", content: userMessage(for: question, canSeeImages: canSeeImages)),
         ]
+        for turn in conversation.replayableTurns {
+            messages.append(.init(role: "user",
+                                  content: userMessage(for: turn.question, canSeeImages: canSeeImages)))
+            messages.append(.init(role: "assistant", content: turn.answer))
+        }
+        messages.append(.init(role: "user",
+                              content: userMessage(for: question, canSeeImages: canSeeImages)))
+        return messages
     }
 
     static func body(question: Question,
@@ -209,12 +225,13 @@ enum DeepSeekRequestBuilder {
                      title: String,
                      model: DeepSeekModel,
                      thinking: DeepSeekThinking,
-                     canSeeImages: Bool) -> DeepSeekChatRequest
+                     canSeeImages: Bool,
+                     conversation: Conversation = Conversation()) -> DeepSeekChatRequest
     {
         DeepSeekChatRequest(
             model: model.rawValue,
-            messages: messages(question: question, document: document,
-                               title: title, canSeeImages: canSeeImages),
+            messages: messages(question: question, document: document, title: title,
+                               canSeeImages: canSeeImages, conversation: conversation),
             stream: true,
             streamOptions: .init(),
             maxTokens: maxTokens,

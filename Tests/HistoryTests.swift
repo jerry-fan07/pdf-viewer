@@ -43,7 +43,7 @@ final class HistoryTests: XCTestCase {
         card.isStreaming = false
 
         store.save(StoredHistory(documentURL: document, cards: [card]), for: document)
-        let restored = try XCTUnwrap(store.load(for: document)).cards.map(QACard.init(stored:))
+        let restored = try XCTUnwrap(store.load(for: document)).cards.map { QACard(stored: $0) }
 
         XCTAssertEqual(restored.count, 1)
         let back = try XCTUnwrap(restored.first)
@@ -60,6 +60,43 @@ final class HistoryTests: XCTestCase {
         XCTAssertEqual(back.outputTokens, 310)
         XCTAssertEqual(back.costUSD, 0.0212)
         XCTAssertFalse(back.isStreaming, "a restored card is never mid-stream")
+    }
+
+    /// Where one conversation ended and the next began is part of the transcript:
+    /// without it, a reopened document would draw two unrelated conversations as
+    /// one continuous thread.
+    func testConversationBoundariesSurviveAReopen() throws {
+        let first = UUID(), second = UUID()
+        let cards = ["a", "b", "c"].enumerated().map { index, text -> QACard in
+            var card = QACard(threadID: index < 2 ? first : second,
+                              question: Question(text: text))
+            card.isStreaming = false
+            return card
+        }
+        store.save(StoredHistory(documentURL: document, cards: cards), for: document)
+
+        let back = try XCTUnwrap(store.load(for: document)).cards.map { QACard(stored: $0) }
+        XCTAssertEqual(back.map(\.threadID), [first, first, second])
+    }
+
+    /// Transcripts written before conversations were threaded have no ids at all.
+    /// They were one conversation, and have to read back as one rather than as a
+    /// break before every question.
+    func testATranscriptWrittenBeforeThreadsReadsBackAsOneConversation() throws {
+        let legacy = StoredHistory(
+            documentPath: document.path,
+            cards: (0..<3).map { index in
+                StoredCard(id: UUID(), askedAt: Date(), questionText: "q\(index)",
+                           answer: "a\(index)", citations: [], notices: [],
+                           providerName: "Claude (API)")
+            }
+        )
+        store.save(legacy, for: document)
+
+        let shared = UUID()
+        let back = try XCTUnwrap(store.load(for: document)).cards
+            .map { QACard(stored: $0, fallbackThreadID: shared) }
+        XCTAssertEqual(Set(back.map(\.threadID)), [shared])
     }
 
     /// The provider badge is per card precisely so a transcript can outlive the

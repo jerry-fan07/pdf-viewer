@@ -104,7 +104,7 @@ struct AnthropicMessagesRequest: Encodable {
     let maxTokens: Int
     let stream: Bool
     let system: [SystemTextBlock]
-    let messages: [UserMessage]
+    let messages: [Message]
     let outputConfig: OutputConfig
     /// Server-side refusal fallback: if Opus 5's safety classifiers decline a
     /// question, the API re-serves it on Anthropic's recommended fallback model
@@ -123,9 +123,19 @@ struct AnthropicMessagesRequest: Encodable {
         let text: String
     }
 
-    struct UserMessage: Encodable {
-        let role = "user"
+    /// A turn. Assistant turns exist because a thread is replayed to an API that
+    /// keeps no conversation of its own; they carry the answer as one text block.
+    struct Message: Encodable {
+        let role: String
         let content: [AnthropicContentBlock]
+
+        static func user(_ content: [AnthropicContentBlock]) -> Message {
+            Message(role: "user", content: content)
+        }
+
+        static func assistant(_ text: String) -> Message {
+            Message(role: "assistant", content: [.text(text)])
+        }
     }
 
     struct OutputConfig: Encodable { let effort: String }
@@ -182,6 +192,22 @@ enum AnthropicRequestBuilder {
     /// Everything after the breakpoint. Varies per question and never invalidates
     /// the cache.
     static func volatileSuffix(for question: Question) -> [AnthropicContentBlock] {
+        suffix(for: question, resendingCrop: true)
+    }
+
+    /// A past turn's user side. Identical to `volatileSuffix` but for the crop:
+    /// the image is described rather than re-uploaded, so a ten-turn thread does
+    /// not re-send ten screenshots with every question. It also keeps the three
+    /// providers saying the same thing about a past crop — DeepSeek cannot see one
+    /// at all, and Claude Code still has the real image in its resumed session.
+    /// Re-cropping is the way back to the pixels if a follow-up needs them.
+    static func replayedSuffix(for question: Question) -> [AnthropicContentBlock] {
+        suffix(for: question, resendingCrop: false)
+    }
+
+    private static func suffix(for question: Question,
+                               resendingCrop: Bool) -> [AnthropicContentBlock]
+    {
         var blocks: [AnthropicContentBlock] = []
 
         if let selected = question.selectedText?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -192,8 +218,17 @@ enum AnthropicRequestBuilder {
 
         if let png = question.regionImagePNG {
             let page = question.regionPage.map { "page \($0)" } ?? "the document"
-            blocks.append(.text("The reader cropped this region from \(page):"))
-            blocks.append(.imagePNG(base64: png.base64EncodedString()))
+            if resendingCrop {
+                blocks.append(.text("The reader cropped this region from \(page):"))
+                blocks.append(.imagePNG(base64: png.base64EncodedString()))
+            } else {
+                var note = "The reader cropped a region from \(page), shown to you at the time."
+                if let fallback = question.regionFallbackText?
+                    .trimmingCharacters(in: .whitespacesAndNewlines), !fallback.isEmpty {
+                    note += " Its text:\n\"\"\"\n\(fallback)\n\"\"\""
+                }
+                blocks.append(.text(note))
+            }
         }
 
         var closing = ""
@@ -210,8 +245,39 @@ enum AnthropicRequestBuilder {
         cachedPrefix(for: attachment) + volatileSuffix(for: question)
     }
 
+    /// The turns, with the document opening the first of them.
+    ///
+    /// The thread is replayed *after* the cache breakpoint, every question, which
+    /// is what keeps a continuous conversation compatible with a cached document:
+    /// the serialized bytes up to and including the document block are the same on
+    /// question 1 and question 20. The history itself is not cached — the known
+    /// follow-up here is a second, rolling `cache_control` on the current turn, and
+    /// it is deliberately not in this change because the first breakpoint's live
+    /// cache-hit behaviour is still unverified (README, "Status").
+    static func messages(question: Question,
+                         attachment: DocumentAttachment,
+                         conversation: Conversation) -> [AnthropicMessagesRequest.Message]
+    {
+        let turns = conversation.replayableTurns
+        guard let first = turns.first else {
+            return [.user(content(for: question, attachment: attachment))]
+        }
+
+        var messages: [AnthropicMessagesRequest.Message] = [
+            .user(cachedPrefix(for: attachment) + replayedSuffix(for: first.question)),
+            .assistant(first.answer),
+        ]
+        for turn in turns.dropFirst() {
+            messages.append(.user(replayedSuffix(for: turn.question)))
+            messages.append(.assistant(turn.answer))
+        }
+        messages.append(.user(volatileSuffix(for: question)))
+        return messages
+    }
+
     static func body(question: Question,
                      attachment: DocumentAttachment,
+                     conversation: Conversation = Conversation(),
                      model: AnthropicModel) -> AnthropicMessagesRequest
     {
         AnthropicMessagesRequest(
@@ -219,7 +285,8 @@ enum AnthropicRequestBuilder {
             maxTokens: maxTokens,
             stream: true,
             system: [.init(text: systemPrompt)],
-            messages: [.init(content: content(for: question, attachment: attachment))],
+            messages: messages(question: question, attachment: attachment,
+                               conversation: conversation),
             outputConfig: .init(effort: effort),
             fallbacks: "default"
         )

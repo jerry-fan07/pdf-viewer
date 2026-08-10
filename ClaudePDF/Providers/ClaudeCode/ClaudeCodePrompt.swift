@@ -32,8 +32,32 @@ enum ClaudeCodePrompt {
         "Read the PDF at \(documentPath). Reply only 'ready'."
     }
 
-    static func ask(_ question: Question, cropPath: String?) -> String {
+    /// Turns this session cannot already know about, written into the prompt.
+    ///
+    /// Normally empty: the thread lives in the session, so continuing it is a
+    /// resume rather than a retelling. It fills up in the two cases where the
+    /// session and the thread have come apart — the reader switched provider
+    /// mid-conversation, so this is the first Claude Code question of a thread
+    /// that started elsewhere; or an answer was stopped part-way and left no fork
+    /// behind to resume.
+    static func replay(_ turns: [ConversationTurn]) -> String? {
+        guard !turns.isEmpty else { return nil }
+        let exchanges = turns.map { turn in
+            "Q: \(turn.question.text)\nA: \(turn.answer)"
+        }
+        return "Earlier in this conversation, answered elsewhere:\n\n"
+            + exchanges.joined(separator: "\n\n")
+    }
+
+    static func ask(_ question: Question,
+                    cropPath: String?,
+                    replaying turns: [ConversationTurn] = []) -> String
+    {
         var parts: [String] = []
+
+        if let replayed = replay(turns) {
+            parts.append(replayed)
+        }
 
         if let selected = question.selectedText?.trimmingCharacters(in: .whitespacesAndNewlines),
            !selected.isEmpty {

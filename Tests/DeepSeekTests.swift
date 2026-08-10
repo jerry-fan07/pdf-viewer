@@ -149,6 +149,66 @@ final class DeepSeekTests: XCTestCase {
                        "the question must never enter the cached prefix")
     }
 
+    // MARK: Conversations
+
+    /// DeepSeek's cache is automatic and matches on repeated prefixes, so the test
+    /// is literally the cache's own rule: everything request N sent has to be a
+    /// byte-prefix of what request N+1 sends. Replaying a past turn from anything
+    /// but its stored `Question` — the page the reader is on *now*, say — would
+    /// break this and turn every follow-up into a full-document cache miss.
+    func testEachRequestIsAByteExtensionOfTheOneBeforeIt() throws {
+        let encoder = DeepSeekRequestBuilder.encoder()
+        func request(_ thread: Conversation, asking text: String) throws -> [Data] {
+            try DeepSeekRequestBuilder.messages(
+                question: Question(text: text), document: document, title: "paper.pdf",
+                canSeeImages: false, conversation: thread
+            ).map { try encoder.encode($0) }
+        }
+
+        var thread = Conversation()
+        var previous = try request(thread, asking: "q0")
+        for turn in 1...3 {
+            thread.turns.append(ConversationTurn(question: Question(text: "q\(turn - 1)"),
+                                                 answer: "a\(turn - 1)"))
+            let current = try request(thread, asking: "q\(turn)")
+            XCTAssertEqual(Array(current.prefix(previous.count - 1)),
+                           Array(previous.dropLast()),
+                           "turn \(turn) rewrote the prefix the cache was written with")
+            XCTAssertEqual(current.count, previous.count + 2)
+            previous = current
+        }
+    }
+
+    func testTheConversationSitsBetweenTheDocumentAndTheQuestion() {
+        let thread = Conversation(turns: [
+            ConversationTurn(question: Question(text: "what is a Kan extension?"),
+                             answer: "A universal…"),
+        ])
+        let messages = DeepSeekRequestBuilder.messages(
+            question: plainQuestion(), document: document, title: "paper.pdf",
+            canSeeImages: false, conversation: thread
+        )
+        XCTAssertEqual(messages.map(\.role), ["system", "user", "assistant", "user"])
+        XCTAssertTrue(messages[1].content.contains("what is a Kan extension?"))
+        XCTAssertEqual(messages[2].content, "A universal…")
+        XCTAssertTrue(messages[3].content.hasSuffix("Question: What is the central claim?"))
+    }
+
+    /// Two `user` messages in a row is a 400 here as much as on the Anthropic
+    /// path, so a turn whose answer never arrived is dropped whole.
+    func testATurnWithNoAnswerIsDroppedWholeRatherThanLeftHalfThere() {
+        let thread = Conversation(turns: [
+            ConversationTurn(question: Question(text: "asked"), answer: "answered"),
+            ConversationTurn(question: Question(text: "stopped dead"), answer: ""),
+        ])
+        let messages = DeepSeekRequestBuilder.messages(
+            question: plainQuestion(), document: document, title: "paper.pdf",
+            canSeeImages: false, conversation: thread
+        )
+        XCTAssertEqual(messages.map(\.role), ["system", "user", "assistant", "user"])
+        XCTAssertFalse(messages.contains { $0.content.contains("stopped dead") })
+    }
+
     // MARK: Vision degradation (PLAN.md §4)
 
     func testCropWithTextFallsBackToThatTextInsteadOfTheImage() {

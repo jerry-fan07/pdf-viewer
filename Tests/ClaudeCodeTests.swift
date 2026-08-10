@@ -168,6 +168,34 @@ final class ClaudeCodePromptTests: XCTestCase {
         XCTAssertTrue(prompt.contains("Summarise it."))
     }
 
+    /// The thread normally lives in the resumed session, so there is nothing to
+    /// retell and the prompt must not start retelling it.
+    func testNothingIsReplayedWhenTheSessionAlreadyHasTheConversation() {
+        XCTAssertNil(ClaudeCodePrompt.replay([]))
+        let prompt = ClaudeCodePrompt.ask(Question(text: "and then?"), cropPath: nil)
+        XCTAssertFalse(prompt.contains("Earlier in this conversation"))
+    }
+
+    /// The case that needs it: the conversation started on another provider, so
+    /// this session has never seen any of it.
+    func testAConversationFromAnotherProviderIsRetoldInThePrompt() throws {
+        let turns = [
+            ConversationTurn(question: Question(text: "what is a Kan extension?"),
+                             answer: "A universal way to extend a functor."),
+            ConversationTurn(question: Question(text: "and the left one?"), answer: "The colimit."),
+        ]
+        let prompt = ClaudeCodePrompt.ask(Question(text: "give me an example"),
+                                          cropPath: nil, replaying: turns)
+
+        XCTAssertTrue(prompt.contains("what is a Kan extension?"))
+        XCTAssertTrue(prompt.contains("A universal way to extend a functor."))
+        XCTAssertTrue(prompt.contains("The colimit."))
+        // Retold first, so the question the CLI is answering is still the last thing it reads.
+        let retold = try XCTUnwrap(prompt.range(of: "Earlier in this conversation"))
+        let asked = try XCTUnwrap(prompt.range(of: "Question: give me an example"))
+        XCTAssertLessThan(retold.lowerBound, asked.lowerBound)
+    }
+
     func testEffortMapsToCLIArguments() {
         XCTAssertEqual(ClaudeCodeEffort.cliDefault.arguments, [])
         XCTAssertEqual(ClaudeCodeEffort.low.arguments, ["--effort", "low"])
