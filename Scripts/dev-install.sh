@@ -34,6 +34,13 @@
 #   INSTALL_DIR=/Applications Scripts/dev-install.sh
 #   CONFIGURATION=Release Scripts/dev-install.sh
 #   IDENTITY="Apple Development" Scripts/dev-install.sh
+#   IN_PLACE=1 Scripts/dev-install.sh  # same signing, run from DerivedData instead
+#
+# IN_PLACE is for running two branches side by side (the "app-isolated" run
+# script): nothing is installed and the build runs out of this workspace, so it
+# gets a Dock tile of its own — but it is still signed with the certificate, so
+# it is still the same app to the keychain. Run ad-hoc, as it used to be, it
+# asked for the login password twice (once per API key) after every rebuild.
 #
 # One tile means one bundle at that path, so only one branch can be installed
 # at a time: this quits an instance already running from the install path
@@ -83,6 +90,13 @@ xcodebuild \
   -derivedDataPath "$DERIVED_DATA" \
   ${sign_args[@]+"${sign_args[@]}"} \
   build
+
+if [[ "${IN_PLACE:-0}" == 1 ]]; then
+  codesign -d -r- "$BUILT" 2>&1 | sed -n 's/^#* *designated => /    identity: /p'
+  # The same relative path the script has always exec'd, so anything that finds
+  # this workspace's instance by its command line still does.
+  exec "./$BUILT/Contents/MacOS/$APP_NAME"
+fi
 
 # Only instances launched from the install path are in the way; a build another
 # workspace is running out of its own DerivedData is left alone.
