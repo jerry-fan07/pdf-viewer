@@ -408,8 +408,8 @@ final class ChatEngineTests: XCTestCase {
         XCTAssertEqual(attaches, 1, "starting a conversation re-prepared the document")
     }
 
-    /// A transcript is one column of cards, but not one conversation. The break is
-    /// drawn from these ids, so they are the thing to assert.
+    /// One saved list of cards, several conversations. The tabs are sorted out of
+    /// these ids, so they are the thing to assert.
     func testCardsAreStampedWithTheConversationTheyWereAskedIn() async throws {
         let engine = ChatEngine(provider: stub(id: "anthropic", name: "Claude (API)"),
                                 history: history)
@@ -434,6 +434,283 @@ final class ChatEngineTests: XCTestCase {
         let before = engine.threadID
         engine.startNewThread()
         XCTAssertEqual(engine.threadID, before)
+    }
+
+    // MARK: Tabs
+
+    /// The rail is drawn from this list: one entry per conversation, oldest first so
+    /// a tab never moves, named after the question that opened it — and the
+    /// selected thread listed even while blank, or New Conversation would appear
+    /// to do nothing.
+    func testEveryConversationIsATabAndTheBlankOneIsListedToo() async throws {
+        let engine = ChatEngine(provider: stub(id: "anthropic", name: "Claude (API)"),
+                                history: history)
+        engine.attach(info)
+        XCTAssertEqual(engine.threads.map(\.title), [nil], "the rail must never be empty")
+
+        _ = try await ask(engine, "first")
+        _ = try await ask(engine, "second")
+        engine.startNewThread()
+
+        XCTAssertEqual(engine.threads.map(\.title), ["first", nil])
+        XCTAssertEqual(engine.threads.map(\.answerCount), [2, 0])
+        XCTAssertEqual(engine.threads.last?.id, engine.threadID)
+        XCTAssertTrue(engine.threadCards.isEmpty, "a new tab opened showing the old conversation")
+
+        // A blank tab that is left behind was never a conversation.
+        engine.selectThread(engine.threads[0].id)
+        XCTAssertEqual(engine.threads.map(\.title), ["first"])
+        XCTAssertEqual(engine.threadCards.map(\.question.text), ["first", "second"])
+    }
+
+    /// The point of keeping parked conversations rather than rebuilding them: a
+    /// provider-side session survives the round trip, so A → B → A resumes A
+    /// instead of paying to retell it.
+    func testGoingBackToATabResumesItsSession() async throws {
+        let engine = ChatEngine(provider: stub(id: "claude-code", name: "Claude (subscription)",
+                                               session: "session"),
+                                history: history)
+        engine.attach(info)
+
+        _ = try await ask(engine, "about section 2")
+        let first = engine.threadID
+        engine.startNewThread()
+        _ = try await ask(engine, "about section 5")
+
+        engine.selectThread(first)
+        XCTAssertEqual(engine.conversation.handle, "session-0")
+        XCTAssertTrue(engine.conversation.unhandledTurns.isEmpty,
+                      "a thread that still has its session is being replayed anyway")
+
+        _ = try await ask(engine, "and its proof?")
+        let sent = await log.conversations()
+        XCTAssertEqual(sent.map(\.turns.count), [0, 0, 1])
+        XCTAssertEqual(sent[2].turns.first?.question.text, "about section 2",
+                       "the follow-up was asked inside the wrong conversation")
+        XCTAssertEqual(engine.threadCards.map(\.question.text), ["about section 2", "and its proof?"])
+    }
+
+    /// A session id belongs to the provider that issued it — in the tabs that are
+    /// shut as much as in the one that is open.
+    func testSwitchingProviderDropsTheSessionsOfParkedTabsToo() async throws {
+        let claude = stub(id: "claude-code", name: "Claude (subscription)", session: "session")
+        let engine = ChatEngine(provider: claude, history: history)
+        engine.attach(info)
+
+        _ = try await ask(engine, "in the first tab")
+        let first = engine.threadID
+        engine.startNewThread()
+        engine.switchProvider(to: stub(id: "anthropic", name: "Claude (API)"))
+        try await waitUntil { engine.attachStatus == nil }
+
+        engine.selectThread(first)
+        XCTAssertNil(engine.conversation.handle, "another provider's session came back with the tab")
+        XCTAssertEqual(engine.conversation.unhandledTurns.count, 1)
+    }
+
+    /// The reader may read another conversation while an answer arrives. The answer
+    /// has to land in the conversation it was asked in, not in whichever is open.
+    func testAnAnswerThatFinishesInABackgroundTabJoinsItsOwnConversation() async throws {
+        let engine = ChatEngine(provider: stub(id: "anthropic", name: "Claude (API)"),
+                                history: history)
+        engine.attach(info)
+        _ = try await ask(engine, "old question")
+        let old = engine.threadID
+        engine.startNewThread()
+        let new = engine.threadID
+
+        engine.switchProvider(to: stub(id: "anthropic", name: "Claude (API)",
+                                       askStall: .milliseconds(150)))
+        engine.ask(Question(text: "slow question"))
+        try await waitUntil { engine.cards.last?.answer.isEmpty == false }
+
+        engine.selectThread(old)
+        XCTAssertFalse(engine.isStreamingHere)
+        XCTAssertEqual(engine.threads.map(\.isStreaming), [false, true])
+        engine.deleteThread(new)
+        XCTAssertEqual(engine.threads.count, 2, "a conversation was deleted from under its answer")
+
+        try await waitUntil { !engine.isStreaming }
+        XCTAssertEqual(engine.conversation.turns.map(\.question.text), ["old question"],
+                       "the background answer was filed under the tab that happened to be open")
+        engine.selectThread(new)
+        XCTAssertEqual(engine.conversation.turns.map(\.question.text), ["slow question"])
+    }
+
+    func testDeletingATabRemovesItsCardsAndLandsOnANeighbour() async throws {
+        let engine = ChatEngine(provider: stub(id: "anthropic", name: "Claude (API)"),
+                                history: history)
+        engine.attach(info)
+        _ = try await ask(engine, "keep me")
+        let kept = engine.threadID
+        engine.startNewThread()
+        _ = try await ask(engine, "delete me")
+
+        engine.deleteThread(engine.threadID)
+        XCTAssertEqual(engine.threadID, kept)
+        XCTAssertEqual(engine.cards.map(\.question.text), ["keep me"])
+        XCTAssertEqual(engine.conversation.turns.count, 1, "landed on the tab without its conversation")
+
+        try await waitUntil { self.history.load(for: self.info.fileURL)?.cards.count == 1 }
+
+        // The last one leaves a blank tab behind, and no file.
+        engine.deleteThread(kept)
+        XCTAssertEqual(engine.threads.map(\.title), [nil])
+        XCTAssertTrue(engine.conversation.isEmpty)
+        try await waitUntil { self.history.load(for: self.info.fileURL) == nil }
+    }
+
+    /// Reopening a document: its conversations are tabs again, it opens on the one
+    /// the reader was last in, and that one can be carried on — by replaying its
+    /// turns, because no session of yesterday's is still anyone's to resume.
+    func testASavedConversationReopensAsATabAndCanBeCarriedOn() async throws {
+        let yesterday = ChatEngine(provider: stub(id: "claude-code", name: "Claude (subscription)",
+                                                  session: "session"),
+                                   history: history)
+        yesterday.attach(info)
+        _ = try await ask(yesterday, "an older conversation")
+        yesterday.startNewThread()
+        _ = try await ask(yesterday, "what is a Kan extension?")
+        let last = yesterday.threadID
+        try await waitUntil { self.history.load(for: self.info.fileURL)?.cards.count == 2 }
+
+        let today = ChatEngine(provider: stub(id: "claude-code", name: "Claude (subscription)",
+                                              session: "session"),
+                               history: history)
+        today.attach(info)
+        try await waitUntil { today.cards.count == 2 }
+
+        XCTAssertEqual(today.threadID, last, "the window did not reopen on the last conversation")
+        XCTAssertEqual(today.threads.map(\.title), ["an older conversation", "what is a Kan extension?"])
+        XCTAssertNil(today.conversation.handle, "a session from a previous launch was resumed")
+        XCTAssertEqual(today.conversation.unhandledTurns.map(\.question.text), ["what is a Kan extension?"])
+
+        _ = try await ask(today, "and a left one?")
+        let sent = await log.conversations().last
+        XCTAssertEqual(sent?.turns.map(\.question.text), ["what is a Kan extension?"])
+    }
+
+    // MARK: Where a conversation is stuck to the document
+
+    /// A conversation is a note on a page: it is given its place when it is made,
+    /// keeps it however many questions follow, and has it back after a reopen.
+    func testAConversationKeepsThePlaceItWasStartedAt() async throws {
+        let engine = ChatEngine(provider: stub(id: "anthropic", name: "Claude (API)"), history: history)
+        engine.attach(info)
+
+        engine.startNewThread(at: NoteAnchor(page: 3, y: 0.4))
+        _ = try await ask(engine, "about a passage on page three")
+        _ = try await ask(engine, "a follow-up, asked from wherever")
+        engine.startNewThread(at: NoteAnchor(page: 7))
+        _ = try await ask(engine, "about page seven")
+
+        XCTAssertEqual(engine.threads.map(\.anchor), [NoteAnchor(page: 3, y: 0.4), NoteAnchor(page: 7)])
+        try await waitUntil { self.history.load(for: self.info.fileURL)?.anchors?.count == 2 }
+
+        let reopened = ChatEngine(provider: stub(id: "anthropic", name: "Claude (API)"), history: history)
+        reopened.attach(info)
+        try await waitUntil { reopened.cards.count == 3 }
+        XCTAssertEqual(reopened.threads.map(\.anchor), [NoteAnchor(page: 3, y: 0.4), NoteAnchor(page: 7)])
+    }
+
+    /// A blank note is picked up and put down, not multiplied: "+" on one page and
+    /// then on another leaves one blank note, on the second page.
+    func testABlankNoteIsMovedRatherThanMultiplied() {
+        let engine = ChatEngine(provider: stub(id: "anthropic", name: "Claude (API)"), history: history)
+        engine.startNewThread(at: NoteAnchor(page: 2))
+        let blank = engine.threadID
+        engine.startNewThread(at: NoteAnchor(page: 5, y: 0.25))
+
+        XCTAssertEqual(engine.threadID, blank)
+        XCTAssertEqual(engine.threads.map(\.anchor), [NoteAnchor(page: 5, y: 0.25)])
+    }
+
+    /// Conversations saved before notes had places go on the page their first
+    /// question was about — the crop's, else the selection's, else the one being read.
+    func testAConversationSavedWithoutAPlaceGoesWhereItsFirstQuestionWasAbout() async throws {
+        var cropped = Question(text: "what is this figure?")
+        cropped.regionPage = 4
+        cropped.pageHint = 9
+        var selected = Question(text: "and this sentence?")
+        selected.selectedTextPage = 6
+        var read = Question(text: "summarise")
+        read.pageHint = 2
+        let cards = [cropped, selected, read, Question(text: "nothing to go on")].map {
+            QACard(question: $0, answer: "yes", isStreaming: false)
+        }
+        history.save(StoredHistory(documentURL: info.fileURL, cards: cards), for: info.fileURL)
+
+        let engine = ChatEngine(provider: stub(id: "anthropic", name: "Claude (API)"), history: history)
+        engine.attach(info)
+        try await waitUntil { engine.cards.count == 4 }
+        XCTAssertEqual(engine.threads.map(\.anchor.page), [4, 6, 2, 1])
+        XCTAssertEqual(engine.threads.compactMap(\.anchor.y), [], "a place nobody chose was given a passage")
+    }
+
+    /// ⇧⌘] is the next note *in the document* — down the page, then on to the next
+    /// page — whatever order the notes were written in.
+    func testSteppingBetweenNotesFollowsTheDocumentNotTheClock() async throws {
+        let engine = ChatEngine(provider: stub(id: "anthropic", name: "Claude (API)"), history: history)
+        engine.attach(info)
+        // Written back to front, so the two orders are not the same walk.
+        for (text, place) in [("last", NoteAnchor(page: 9)), ("middle", NoteAnchor(page: 2, y: 0.7)),
+                              ("first", NoteAnchor(page: 2, y: 0.1))] {
+            engine.startNewThread(at: place)
+            _ = try await ask(engine, text)
+        }
+
+        var visited: [String?] = []
+        for _ in 0..<3 {
+            engine.selectAdjacentThread(offset: 1)
+            visited.append(engine.selectedThread?.title)
+        }
+        XCTAssertEqual(visited, ["middle", "last", "first"], "from the first note, down the document and round")
+    }
+
+    /// Deleting every conversation leaves the blank note where the reader was,
+    /// not back on page one.
+    func testDeletingEverythingLeavesTheBlankNoteInPlace() async throws {
+        let engine = ChatEngine(provider: stub(id: "anthropic", name: "Claude (API)"), history: history)
+        engine.attach(info)
+        engine.startNewThread(at: NoteAnchor(page: 8, y: 0.5))
+        _ = try await ask(engine, "something")
+
+        engine.clearHistory()
+        XCTAssertEqual(engine.threads.map(\.anchor), [NoteAnchor(page: 8, y: 0.5)])
+    }
+
+    /// Restoring reads a file, and the reader can ask before it has been read. They
+    /// are somewhere by then; the saved conversations join the rail around them.
+    func testRestoringDoesNotPullTheReaderOutOfAConversationTheyHaveStarted() async throws {
+        let card = QACard(question: Question(text: "saved"), answer: "yes", isStreaming: false)
+        history.save(StoredHistory(documentURL: info.fileURL, cards: [card]), for: info.fileURL)
+
+        let engine = ChatEngine(provider: stub(id: "anthropic", name: "Claude (API)"),
+                                history: history)
+        engine.attach(info)
+        let mine = engine.threadID
+        engine.ask(Question(text: "asked at once"))
+        try await waitUntil { engine.cards.count == 2 && !engine.isStreaming }
+
+        XCTAssertEqual(engine.threadID, mine)
+        XCTAssertEqual(engine.threads.map(\.title), ["saved", "asked at once"])
+    }
+
+    /// What `record` counts as a turn while cards are live is what resuming counts
+    /// when they are read back: an answer that arrived — stopped or not — and never
+    /// one that failed or said nothing.
+    func testResumingCountsTheSameTurnsTheLiveConversationDid() {
+        func card(_ text: String, answer: String, error: String? = nil) -> QACard {
+            QACard(question: Question(text: text), answer: answer, error: error, isStreaming: false)
+        }
+        let resumed = Conversation(resuming: [
+            card("answered", answer: "yes"),
+            card("stopped", answer: "part of an ans", error: QACard.cancelledNotice),
+            card("failed", answer: "half", error: "The network connection was lost."),
+            card("silent", answer: "  "),
+        ])
+        XCTAssertEqual(resumed.turns.map(\.question.text), ["answered", "stopped"])
+        XCTAssertNil(resumed.handle)
     }
 
     /// A handle is one provider's private bookmark. Crossing to another provider

@@ -108,11 +108,8 @@ final class UISnapshots: XCTestCase {
         // Without it the shot only ever showed the one path that has citations, which
         // is how the strip came to be empty in the app for the other two.
         //
-        // Asked in a *new* conversation, so the shot also has to show the break
-        // the panel draws between one and the next, and the header button that
-        // makes one — both of which are only visible with two threads on screen.
-        engine.startNewThread()
-        XCTAssertTrue(engine.conversation.isEmpty)
+        // Asked in the *same* conversation, after a change of voice: a second
+        // conversation would be a second tab, and this shot is of one panel.
         engine.switchProvider(to: ProsePageProvider(), isWindowOverride: true)
         var third = Question(text: "Where is the cache breakpoint discussed?")
         third.pageHint = 1
@@ -125,15 +122,119 @@ final class UISnapshots: XCTestCase {
         XCTAssertTrue(cliCard.citations.isEmpty, "this path is supposed to have none")
         XCTAssertEqual(cliCard.citedPages(inDocumentOf: document.pageCount), [1, 2])
 
-        let panel = ChatPanelView(engine: engine, viewer: viewer)
-        let image = try XCTUnwrap(render(panel, width: 420, height: 1500))
+        // The sheet as the page shows it: beside its tab, with the page's other
+        // notes shut above and below — so there have to be other notes, on this
+        // page and on the other one, each level with what it was asked about.
+        let open = engine.threadID
+        let places = [NoteAnchor(page: 2, y: 0.55), NoteAnchor(page: 1, y: 0.2), NoteAnchor(page: 2)]
+        for (text, place) in zip(["Summarise the method in two sentences",
+                                  "Who is cited for the cache design?",
+                                  "Is the evaluation convincing?"], places) {
+            engine.startNewThread(at: place)
+            engine.switchProvider(to: MockProvider())
+            var question = Question(text: text)
+            question.pageHint = place.page
+            engine.ask(question)
+            let deadline = Date().addingTimeInterval(30)
+            while engine.isStreaming && Date() < deadline {
+                try await Task.sleep(for: .milliseconds(100))
+            }
+        }
+        engine.selectThread(open)
+
+        let notes = PageNotesModel()
+        notes.sheetWidth = PageNotesModel.defaultSheetWidth
+        notes.isOpen = true
+        let panel = PageNotesView(page: 2, pageHeight: 1500, engine: engine, viewer: viewer, model: notes)
+            .background(Color(nsColor: PDFPageDarkening.lightBackdrop))
+        notes.wantedSheetHeight = 1500
+        let panelWidth = PageNotesModel.tabColumn + notes.sheetWidth
+        let image = try XCTUnwrap(render(panel, width: panelWidth, height: 1500))
         try write(image, "chat-panel.png")
 
-        // The same panel again with the dark side of the palette resolved — the
-        // design is drawn light-only, so this is the shot that judges the pairs
+        // The same again with the dark side of the palette resolved — the design
+        // is drawn light-only, so this is the shot that judges the pairs
         // `PanelInk` chose.
-        let dark = try XCTUnwrap(render(panel, width: 420, height: 1500, appearance: .darkAqua))
+        let dark = try XCTUnwrap(render(panel, width: panelWidth, height: 1500, appearance: .darkAqua))
         try write(dark, "chat-panel-dark.png")
+
+        // The real viewer, notes and all. (A `PDFView` draws its paper offscreen
+        // and not what is printed on it, which is all these shots need: where the
+        // page is, and that what is stuck to it is still stuck to it.) Fitted with
+        // a note open; zoomed out, where page, tabs and sheet shrink as one thing
+        // in the middle of the backdrop; the same folded away; and zoomed in and
+        // panned right, where the sheet is reached by scrolling to it like any
+        // other part of the page.
+        let pdfView = AskablePDFView()
+        pdfView.autoScales = true
+        pdfView.displayMode = .singlePageContinuous
+        pdfView.displaysPageBreaks = true
+        pdfView.backgroundColor = PDFPageDarkening.lightBackdrop
+        // Letter paper rather than the fixture's 400×300 cards: how much of a
+        // window a note takes is the thing being looked at.
+        pdfView.document = try XCTUnwrap(PDFDocument(data: Self.blankLetterPages(3)))
+        let live = PDFViewerController()
+        let container = PDFContainerView(pdfView: pdfView, engine: engine, viewer: live, model: notes)
+        container.frame = CGRect(x: 0, y: 0, width: 1100, height: 760)
+        let window = NSWindow(contentRect: container.frame, styleMask: .borderless, backing: .buffered, defer: false)
+        window.contentView = container
+        live.attach(view: pdfView)
+        container.observe()
+        live.scroll(toPage: 2)
+
+        func settle() async throws { try await Task.sleep(for: .milliseconds(250)) }
+        try await settle()
+        XCTAssertEqual(pdfView.pageBreakMargins.right, PageNotesModel.tabColumn + notes.sheetWidth, accuracy: 0.5,
+                       "an open note is room the page makes beside itself")
+        try write(snapshot(container), "notes-fitted-open.png")
+
+        pdfView.scaleFactor = pdfView.scaleFactorForSizeToFit * 0.55
+        try await settle()
+        try write(snapshot(container), "notes-zoomed-out-open.png")
+
+        notes.isOpen = false
+        try await settle()
+        XCTAssertEqual(pdfView.pageBreakMargins.right, PageNotesModel.tabColumn, accuracy: 0.5)
+        try write(snapshot(container), "notes-zoomed-out-folded.png")
+
+        pdfView.autoScales = true
+        try await settle()
+        try write(snapshot(container), "notes-fitted-folded.png")
+
+        notes.isOpen = true
+        try await settle()
+        pdfView.scaleFactor = pdfView.scaleFactorForSizeToFit * 1.7
+        try await settle()
+        if let scroll = pdfView.documentView?.enclosingScrollView, let documentView = pdfView.documentView {
+            let clip = scroll.contentView
+            clip.scroll(to: NSPoint(x: documentView.frame.width - clip.bounds.width, y: clip.bounds.minY))
+            scroll.reflectScrolledClipView(clip)
+        }
+        try await settle()
+        try write(snapshot(container), "notes-zoomed-in-panned.png")
+    }
+
+    private static func blankLetterPages(_ count: Int) -> Data {
+        let data = NSMutableData()
+        var box = CGRect(x: 0, y: 0, width: 612, height: 792)
+        let context = CGContext(consumer: CGDataConsumer(data: data)!, mediaBox: &box, nil)!
+        for _ in 0..<count {
+            context.beginPDFPage(nil)
+            context.setFillColor(.white)
+            context.fill(box)
+            context.endPDFPage()
+        }
+        context.closePDF()
+        return data as Data
+    }
+
+    private func snapshot(_ view: NSView) throws -> NSImage {
+        view.layoutSubtreeIfNeeded()
+        let rep = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: view.bounds))
+        view.cacheDisplay(in: view.bounds, to: rep)
+        let image = NSImage(size: view.bounds.size)
+        image.addRepresentation(rep)
+        return image
     }
 
     // MARK: The flash, on the page

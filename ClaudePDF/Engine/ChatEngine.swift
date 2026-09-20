@@ -13,13 +13,35 @@ struct PendingSelection: Equatable {
     let page: Int?         // 1-indexed
 }
 
+/// One conversation about the document, as the tab rail lists it. Derived from
+/// the cards rather than stored beside them, so there is no second list to fall
+/// out of step with the transcript: a thread exists because something was asked
+/// in it, and stops existing when its last card goes.
+struct ConversationThread: Identifiable, Equatable {
+    let id: UUID
+    /// The question that opened it — the only name a conversation has. Nil for
+    /// the one thread allowed to exist without cards: the selected one, before
+    /// anything has been asked in it.
+    var title: String?
+    var startedAt: Date?
+    var answerCount = 0
+    var costUSD: Double = 0
+    /// An answer is arriving in it right now — which the rail has to say, because
+    /// the reader may be looking at a different tab when it does.
+    var isStreaming = false
+    /// The page, and the place on it, the conversation is stuck to.
+    var anchor = NoteAnchor(page: 1)
+
+    static let untitled = "New conversation"
+    var displayTitle: String { title ?? Self.untitled }
+}
+
 struct QACard: Identifiable {
     var id = UUID()
     var askedAt = Date()
-    /// Which conversation this card belongs to. Cards are one transcript on
-    /// screen, but only the ones sharing the *current* thread id were part of the
-    /// context the last answer was written against — so the panel draws a break
-    /// wherever this changes, rather than implying a continuity that isn't there.
+    /// Which conversation this card belongs to. Every conversation is a tab on
+    /// the rail, and the panel shows the cards of one at a time — so this is what
+    /// sorts a document's one saved list of cards into its tabs.
     /// Defaulting to a fresh id says "a conversation of one", which is what a card
     /// built outside the engine is.
     var threadID = UUID()
@@ -47,6 +69,11 @@ struct QACard: Identifiable {
     var costUSD: Double?
     var error: String?
     var isStreaming = true
+
+    /// What a stopped answer is marked with. A constant because it is read back:
+    /// a stopped answer is still a turn of its conversation, and a failed one is
+    /// not — see `Conversation.init(resuming:)`.
+    static let cancelledNotice = "Cancelled"
 
     /// The answer has stopped arriving — from the stream's own `.done`, from a
     /// cancel, from an error, and from history restore, which is the same moment for
@@ -91,14 +118,25 @@ final class ChatEngine: ObservableObject {
     /// `applySettings`.
     @Published private(set) var providerIsWindowOverride = false
 
-    /// The thread the next question will be asked inside: the turns since the
-    /// conversation started, and wherever a provider is keeping it for us.
-    /// Published because the composer and the New Conversation affordance both
-    /// change shape the moment a conversation has something in it.
+    /// The thread the next question will be asked inside — the *selected tab's*:
+    /// its turns, and wherever a provider is keeping it for us. Published because
+    /// the composer changes shape the moment a conversation has something in it.
     @Published private(set) var conversation = Conversation()
-    /// Stamped onto every card asked in the current thread, so the transcript can
-    /// show where one conversation ended and the next began.
+    /// The selected tab. Stamped onto every card asked while it is, which is what
+    /// files the card under that tab and no other.
     @Published private(set) var threadID = UUID()
+    /// The tab an answer is arriving in, which need not be the selected one: the
+    /// reader can go and read another conversation while this one is answered.
+    @Published private(set) var streamingThreadID: UUID?
+    /// The live conversations of the tabs that are *not* selected. Kept rather
+    /// than rebuilt from their cards because a conversation is more than its
+    /// turns: the Claude Code path's `handle` is a session that already holds the
+    /// thread, and going A → B → A must resume it, not pay to retell it.
+    private var parkedConversations: [UUID: Conversation] = [:]
+    /// Where each conversation is stuck to the document. Beside the cards rather
+    /// than on them, because the one conversation with no cards — a blank note,
+    /// just put on a page — is exactly the one that most needs a place to be.
+    private var anchors: [UUID: NoteAnchor] = [:]
 
     /// What the panel header names. The filename, not PDF metadata: titles in
     /// metadata are wrong or missing often enough that the name the reader chose
@@ -143,6 +181,104 @@ final class ChatEngine: ObservableObject {
     var capabilities: ProviderCapabilities { provider.capabilities }
     var hasHistory: Bool { !cards.isEmpty }
 
+    // MARK: Threads
+
+    /// Every conversation this document has, oldest first — a tab keeps its place
+    /// on the rail for as long as it exists, and a new one goes on the end. The
+    /// selected thread is listed even with nothing asked in it, or pressing New
+    /// Conversation would appear to do nothing at all.
+    var threads: [ConversationThread] {
+        var order: [UUID] = []
+        var byID: [UUID: ConversationThread] = [:]
+        for card in cards {
+            if byID[card.threadID] == nil {
+                order.append(card.threadID)
+                byID[card.threadID] = ConversationThread(
+                    id: card.threadID, title: card.question.text, startedAt: card.askedAt,
+                    anchor: anchors[card.threadID] ?? Self.inferredAnchor(for: card.question)
+                )
+            }
+            byID[card.threadID]?.answerCount += 1
+            byID[card.threadID]?.costUSD += card.costUSD ?? 0
+        }
+        if byID[threadID] == nil {
+            order.append(threadID)
+            byID[threadID] = ConversationThread(id: threadID, anchor: anchors[threadID] ?? NoteAnchor(page: 1))
+        }
+        if let streamingThreadID { byID[streamingThreadID]?.isStreaming = true }
+        return order.compactMap { byID[$0] }
+    }
+
+    /// A conversation saved before notes had places: the page its first question
+    /// was about, and no passage, so it stacks at the head of that page's edge.
+    static func inferredAnchor(for question: Question) -> NoteAnchor {
+        NoteAnchor(page: question.regionPage ?? question.selectedTextPage ?? question.pageHint ?? 1)
+    }
+
+    /// The selected conversation, as its tab has it.
+    var selectedThread: ConversationThread? { threads.first { $0.id == threadID } }
+
+    /// The selected conversation's cards — what the panel shows.
+    var threadCards: [QACard] { cards.filter { $0.threadID == threadID } }
+
+    /// An answer is arriving in the conversation on screen, as opposed to in one
+    /// the reader has tabbed away from. Stop belongs to the first case only.
+    var isStreamingHere: Bool { streamingThreadID == threadID }
+
+    /// Open another conversation's tab: the panel shows its cards and the next
+    /// question is asked inside it.
+    ///
+    /// Allowed while an answer streams, because reading an older conversation is
+    /// exactly what a reader waiting on a long answer wants to do; `record` files
+    /// the answer under the thread it was asked in, wherever the reader is by then.
+    ///
+    /// A thread this window has already had open comes back as it was left,
+    /// provider-side session included. One that has only ever been read from disk
+    /// is rebuilt from its cards — see `Conversation.init(resuming:)` for what that
+    /// does and does not carry.
+    func selectThread(_ id: UUID) {
+        guard id != threadID, cards.contains(where: { $0.threadID == id }) else { return }
+        // A thread nothing was ever asked in is not parked: it has no cards, so it
+        // leaves the rail the moment it stops being the selected one.
+        if !conversation.isEmpty || streamingThreadID == threadID {
+            parkedConversations[threadID] = conversation
+        }
+        threadID = id
+        conversation = parkedConversations.removeValue(forKey: id)
+            ?? Conversation(resuming: threadCards)
+    }
+
+    /// The note before (−1) or after (+1) the selected one in the document, wrapping — ⇧⌘[ and ⇧⌘].
+    func selectAdjacentThread(offset: Int) {
+        // Through the document, not through time: notes are on pages, and the next
+        // one is the next one down. Notes about no passage keep the order they
+        // were started in, at the head of their page — as their tabs do.
+        let ids = threads.enumerated().sorted {
+            ($0.element.anchor.page, $0.element.anchor.y ?? -1, $0.offset)
+                < ($1.element.anchor.page, $1.element.anchor.y ?? -1, $1.offset)
+        }.map(\.element.id)
+        guard ids.count > 1, let index = ids.firstIndex(of: threadID) else { return }
+        selectThread(ids[((index + offset) % ids.count + ids.count) % ids.count])
+    }
+
+    /// Drop one conversation, on screen and on disk. Refused for the one being
+    /// answered right now — Stop it first — and for nothing else.
+    func deleteThread(_ id: UUID) {
+        guard id != streamingThreadID else { return }
+        cards.removeAll { $0.threadID == id }
+        parkedConversations[id] = nil
+        anchors[id] = nil
+        if id == threadID {
+            // Land on the neighbour that is left, newest first; with none, on a
+            // blank tab — the rail is never empty, because the composer always
+            // needs a conversation to ask into.
+            conversation = Conversation()
+            threadID = UUID()
+            if let next = cards.last?.threadID { selectThread(next) }
+        }
+        persist()
+    }
+
     /// Kick off document attachment (upload / extraction / session priming) at open,
     /// and restore whatever transcript this document already has.
     func attach(_ info: PDFDocumentInfo) {
@@ -172,8 +308,9 @@ final class ChatEngine: ObservableObject {
         let previousID = provider.id
         provider = newProvider
         if newProvider.id != previousID {
-            conversation.handle = nil
-            conversation.handledTurns = 0
+            conversation.dropHandle()
+            // The tabs that are not open hold sessions of the old provider's too.
+            for id in parkedConversations.keys { parkedConversations[id]?.dropHandle() }
         }
         // A crop staged for a provider that could see it may be unreadable to the
         // new one — and vice versa (PLAN.md §4).
@@ -316,6 +453,7 @@ final class ChatEngine: ObservableObject {
         ))
         let cardID = cards[cards.count - 1].id
         isStreaming = true
+        streamingThreadID = threadID
         // The thread as it stood when the question was asked. Taken here rather
         // than read inside the task, so a New Conversation pressed while this
         // answer streams cannot retroactively change what was sent.
@@ -337,10 +475,10 @@ final class ChatEngine: ObservableObject {
                 // A cancelled AsyncThrowingStream ends iteration rather than
                 // throwing, so Stop lands here, not in the catch below.
                 if Task.isCancelled {
-                    update(cardID) { $0.error = "Cancelled" }
+                    update(cardID) { $0.error = QACard.cancelledNotice }
                 }
             } catch is CancellationError {
-                update(cardID) { $0.error = "Cancelled" }
+                update(cardID) { $0.error = QACard.cancelledNotice }
             } catch {
                 failed = true
                 update(cardID) { $0.error = error.localizedDescription }
@@ -350,6 +488,7 @@ final class ChatEngine: ObservableObject {
             update(cardID) { $0.finish() }
             if !failed { record(cardID, threadHandle: handle) }
             isStreaming = false
+            streamingThreadID = nil
             // A Settings change made while this answer streamed was held, not
             // dropped: apply it now, so the next question is asked the new way.
             let pending = pendingSettingsChange
@@ -370,20 +509,28 @@ final class ChatEngine: ObservableObject {
     /// surprise. Its fork is usually missing, which `handledTurns` records so the
     /// Claude Code path replays the difference instead of losing it.
     ///
-    /// The card's own thread id guards the whole thing: if the reader started a
-    /// new conversation while this was streaming, the thread this answer belongs
-    /// to is gone, and appending to the one that replaced it would smuggle the old
-    /// context into a conversation the reader asked to be free of it.
+    /// The card's own thread id decides *which* conversation: the reader may have
+    /// opened another tab while this streamed, and appending to whichever one is
+    /// on screen now would smuggle this answer into a conversation it was never
+    /// part of. So it goes to the thread it was asked in — selected or parked —
+    /// and nowhere at all if that thread has been deleted in the meantime.
     private func record(_ cardID: UUID, threadHandle handle: String?) {
-        guard let card = cards.first(where: { $0.id == cardID }),
-              card.threadID == threadID else { return }
+        guard let card = cards.first(where: { $0.id == cardID }) else { return }
+        let isSelected = card.threadID == threadID
+        guard var thread = isSelected ? conversation : parkedConversations[card.threadID]
+        else { return }
 
         if !card.answer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            conversation.turns.append(ConversationTurn(question: card.question, answer: card.answer))
+            thread.turns.append(ConversationTurn(question: card.question, answer: card.answer))
         }
         if let handle {
-            conversation.handle = handle
-            conversation.handledTurns = conversation.turns.count
+            thread.handle = handle
+            thread.handledTurns = thread.turns.count
+        }
+        if isSelected {
+            conversation = thread
+        } else {
+            parkedConversations[card.threadID] = thread
         }
     }
 
@@ -391,30 +538,51 @@ final class ChatEngine: ObservableObject {
         askTask?.cancel()
     }
 
-    /// Start a fresh conversation about the same document.
+    /// Start a fresh conversation about the same document, in a tab of its own.
     ///
     /// This is the counterweight to threading: questions carry the ones before
     /// them, so there has to be a way to say "forget that, I'm on something else"
-    /// without paying to prepare the document again. Only the thread goes — the
+    /// without paying to prepare the document again. Only the thread changes — the
     /// attachment, and with it the uploaded file, the primed session and the
     /// cached prefix, is untouched, so the first question of the new conversation
     /// is as cheap as the second question of the old one.
     ///
-    /// The transcript stays on screen too. It is what the reader was reading, and
-    /// the panel marks the break rather than hiding the fact that it happened.
-    func startNewThread() {
-        guard !isStreaming, !conversation.isEmpty else { return }
+    /// The conversation being left is parked, not ended: its tab stays on the rail
+    /// and picks up where it stopped. Refused on a tab that is already blank —
+    /// a second blank tab is not a second conversation.
+    ///
+    /// A note has to be somewhere, so a new one is given its place as it is made.
+    /// On a tab that is already blank that is *all* that happens: the blank note is
+    /// picked up and put down at the new place.
+    /// With no place given it goes on the page of the one being left.
+    func startNewThread(at place: NoteAnchor? = nil) {
+        guard !isStreaming else { return }
+        guard !conversation.isEmpty || !threadCards.isEmpty else {
+            if let place, anchors[threadID] != place {
+                objectWillChange.send()
+                anchors[threadID] = place
+            }
+            return
+        }
+        let anchor = place ?? NoteAnchor(page: selectedThread?.anchor.page ?? 1)
+        parkedConversations[threadID] = conversation
         conversation = Conversation()
         threadID = UUID()
+        anchors[threadID] = anchor
     }
 
-    /// Drop this document's transcript, on screen and on disk.
+    /// Drop every conversation this document has, on screen and on disk.
     func clearHistory() {
         guard !isStreaming else { return }
         cards.removeAll()
-        // Nothing left to be continuous with.
+        parkedConversations.removeAll()
+        // Nothing left to be continuous with — but the blank note that replaces
+        // them stays where the reader was.
+        let here = anchors[threadID]
+        anchors.removeAll()
         conversation = Conversation()
         threadID = UUID()
+        anchors[threadID] = here
         guard let documentURL else { return }
         let history = self.history
         Task.detached(priority: .utility) { history.clear(for: documentURL) }
@@ -510,12 +678,16 @@ final class ChatEngine: ObservableObject {
 
     // MARK: History
 
-    /// A restored transcript is read back as earlier conversations, never as the
-    /// one the reader is in. History stays display-only (see `HistoryStore`): the
-    /// document has just been attached afresh, nothing on the provider's side
-    /// remembers yesterday's thread, and quietly re-billing an old conversation to
-    /// give the impression that something does would be the worse surprise. The
-    /// panel draws the break, so the transcript says which is which.
+    /// Saved conversations come back as tabs, and the window opens on the newest
+    /// of them — the one the reader was last in — ready to be carried on.
+    ///
+    /// This used to be the opposite: a restored transcript was display-only, on
+    /// the grounds that nothing on the provider's side remembers yesterday's
+    /// thread. That is still true, and it is why a restored thread has no handle
+    /// and replays its turns instead (`Conversation.init(resuming:)`). But a tab
+    /// that can be opened and not asked in is a bookmark, not a conversation. The
+    /// cost is the one the reader can see: the turns above the composer, which
+    /// already says "Ask a follow-up…" rather than "Ask…".
     private func restoreHistory(for url: URL) {
         let history = self.history
         Task.detached(priority: .utility) {
@@ -525,19 +697,38 @@ final class ChatEngine: ObservableObject {
             // conversation per question.
             let legacyThread = UUID()
             let restored = stored.cards.map { QACard(stored: $0, fallbackThreadID: legacyThread) }
+            let places = stored.anchors ?? []
             await MainActor.run {
                 // Anything asked while the file was being read wins — appending
                 // the restored cards in front keeps chronological order.
                 guard !restored.isEmpty else { return }
+                let untouched = self.threadCards.isEmpty && self.conversation.isEmpty
                 self.cards = restored + self.cards
+                for place in places where self.anchors[place.threadID] == nil {
+                    self.anchors[place.threadID] = place.anchor
+                }
+                // A reader who has already asked something is somewhere; leave
+                // them there, with the saved conversations on the rail beside it.
+                if untouched, let newest = restored.last?.threadID {
+                    self.selectThread(newest)
+                }
             }
         }
     }
 
     private func persist() {
         guard let documentURL else { return }
-        let stored = StoredHistory(documentURL: documentURL, cards: cards)
         let history = self.history
+        // Deleting the last conversation leaves nothing worth a file.
+        guard !cards.isEmpty else {
+            Task.detached(priority: .utility) { history.clear(for: documentURL) }
+            return
+        }
+        var stored = StoredHistory(documentURL: documentURL, cards: cards)
+        // Inferred places are written down too: once a note has been seen
+        // somewhere, that is where it lives.
+        stored.anchors = threads.filter { $0.title != nil }
+            .map { StoredAnchor(threadID: $0.id, anchor: $0.anchor) }
         Task.detached(priority: .utility) { history.save(stored, for: documentURL) }
     }
 }
@@ -566,6 +757,8 @@ extension StoredCard {
             selectedText: card.question.selectedText,
             selectedTextPage: card.question.selectedTextPage,
             regionPage: card.question.regionPage,
+            regionFallbackText: card.question.regionFallbackText,
+            pageHint: card.question.pageHint,
             regionThumbnailPNG: card.question.regionImagePNG.flatMap { HistoryStore.thumbnail(png: $0) },
             answer: card.answer,
             citations: card.citations.map { StoredCitation(page: $0.page, citedText: $0.citedText) },
@@ -594,6 +787,8 @@ extension QACard {
         question.selectedTextPage = stored.selectedTextPage
         question.regionImagePNG = stored.regionThumbnailPNG
         question.regionPage = stored.regionPage
+        question.regionFallbackText = stored.regionFallbackText
+        question.pageHint = stored.pageHint
 
         self.init(
             id: stored.id,
@@ -618,5 +813,26 @@ extension QACard {
         // saved with it, so a transcript written before any of this existed gets its
         // pages the first time it is reopened.
         finish()
+    }
+}
+
+extension Conversation {
+    /// Pick a saved conversation back up from its cards.
+    ///
+    /// No handle: whatever session once held this thread belonged to a copy of the
+    /// document that has since been attached afresh, so the turns are replayed —
+    /// the same road a mid-thread provider switch takes. What counts as a turn is
+    /// what `ChatEngine.record` counted when the cards were live: an answer that
+    /// arrived, including one the reader stopped part-way, and not one that failed.
+    ///
+    /// A past crop comes back as its thumbnail, and that is enough: no provider
+    /// re-sends a replayed turn's image (see `AnthropicRequestBuilder`'s
+    /// `replayedSuffix`), only the note that there was one and the text under it —
+    /// which is why `regionFallbackText` is saved with the card.
+    init(resuming cards: [QACard]) {
+        self.init(turns: cards
+            .filter { !$0.isStreaming && ($0.error == nil || $0.error == QACard.cancelledNotice) }
+            .filter { !$0.answer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            .map { ConversationTurn(question: $0.question, answer: $0.answer) })
     }
 }

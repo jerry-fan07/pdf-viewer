@@ -38,6 +38,15 @@ enum PDFPageDarkening {
     /// the surround has to sit at or above the page rather than below it.
     static let backdropBeforeInversion = NSColor(white: 0.95, alpha: 1)
 
+    /// The surround of a light page, stated rather than left to PDFKit.
+    ///
+    /// PDFKit's default cannot be shared: `PDFView.backgroundColor` reads back as a mid grey
+    /// (about 0.63) and is *drawn* as a much lighter one (0.90, sampled off the running app). An
+    /// explicit opaque colour is drawn as given, the way `backdropBeforeInversion` always has
+    /// been, so anything that has to match the surround — a snapshot's stand-in for it — can be
+    /// handed the same one. The value is the sampled one, so the viewer looks as it did.
+    static let lightBackdrop = NSColor(srgbRed: 0.902, green: 0.902, blue: 0.898, alpha: 1)
+
     /// How long a switch takes to cross. A page of paper going near-black in one frame is a
     /// flashbulb in reverse; spread over a third of a second the same change reads as a dimmer
     /// being turned down. Long enough to be seen as a sweep, short enough that ⇧⌘D still feels

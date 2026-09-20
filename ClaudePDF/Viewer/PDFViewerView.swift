@@ -55,6 +55,61 @@ final class PDFViewerController: ObservableObject {
         if let observer = pageObserver { NotificationCenter.default.removeObserver(observer) }
     }
 
+    // MARK: Notes
+
+    /// The room kept beside every page for what is stuck to its edge — the tabs,
+    /// and the open note's sheet — in page points.
+    ///
+    /// It is a page *margin*, which is what makes a note part of the page rather
+    /// than something held next to it. PDFKit lays the margin out with the page,
+    /// so it scales with the page, scrolls with it, is fitted to the window with
+    /// it (the page makes room for a sheet by being fitted smaller), and — zoomed
+    /// in past the window's edge — can be panned to like any other part of it.
+    func setNoteRoom(_ room: CGFloat) {
+        guard let view = pdfView, abs(view.pageBreakMargins.right - room) > 0.01 else { return }
+        view.pageBreakMargins = NSEdgeInsets(top: 0, left: 0, bottom: 0, right: room)
+        // Margins are not re-read until the document is laid out again, and that
+        // is also what re-fits an auto-scaled page to the room it has left.
+        view.layoutDocumentView()
+    }
+
+    /// Where a new note about the text selected right now belongs: on the page the
+    /// selection starts on, level with its first line.
+    func selectionAnchor() -> NoteAnchor? {
+        guard let view = pdfView, let document = view.document,
+              let selection = view.currentSelection, let page = selection.pages.first else { return nil }
+        return Self.anchor(for: selection.bounds(for: page), on: page,
+                           pageNumber: document.index(for: page) + 1, box: view.displayBox)
+    }
+
+    /// The same for a region dragged out in crop mode.
+    func anchor(forViewRect rect: CGRect, in overlay: NSView) -> NoteAnchor? {
+        guard let view = pdfView, let document = view.document else { return nil }
+        let inView = CropGeometry.viewRect(rect, from: overlay, to: view)
+        guard let page = CropGeometry.page(for: inView, in: view) else { return nil }
+        return Self.anchor(for: view.convert(inView, to: page), on: page,
+                           pageNumber: document.index(for: page) + 1, box: view.displayBox)
+    }
+
+    /// A note about the page being read, and no passage on it.
+    var currentPageAnchor: NoteAnchor { NoteAnchor(page: currentPageNumber) }
+
+    /// Page space has its origin at the foot of the page; a note's `y` is measured
+    /// from the head, as a share, in the page as it is *shown* — turned pages
+    /// included, which is why this goes through the box's far corner by rotation.
+    static func anchor(for rect: CGRect, on page: PDFPage, pageNumber: Int, box: PDFDisplayBox) -> NoteAnchor {
+        let bounds = page.bounds(for: box)
+        guard bounds.width > 0, bounds.height > 0 else { return NoteAnchor(page: pageNumber) }
+        let y: CGFloat
+        switch ((page.rotation % 360) + 360) % 360 {
+        case 90: y = (rect.minX - bounds.minX) / bounds.width
+        case 180: y = (rect.minY - bounds.minY) / bounds.height
+        case 270: y = (bounds.maxX - rect.maxX) / bounds.width
+        default: y = (bounds.maxY - rect.maxY) / bounds.height
+        }
+        return NoteAnchor(page: pageNumber, y: Double(y))
+    }
+
     private func pageDidChange() {
         guard let view = pdfView, let document = view.document, let page = view.currentPage else { return }
         currentPageNumber = document.index(for: page) + 1
@@ -264,6 +319,10 @@ final class AskablePDFView: PDFView {
 struct PDFKitView: NSViewRepresentable {
     let document: PDFDocument
     let controller: PDFViewerController
+    /// The conversations, and whether one is unfolded: they are stuck to the pages,
+    /// so they are drawn here, over the viewer (`PDFContainerView`).
+    let engine: ChatEngine
+    let notes: PageNotesModel
     var darkPages = false
     /// Not what the pages do — how they came to be asked. *Match system* is the one mode that
     /// can change them without anybody touching the app, and that change is paced differently.
@@ -278,16 +337,20 @@ struct PDFKitView: NSViewRepresentable {
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
-    func makeNSView(context: Context) -> PDFView {
+    func makeNSView(context: Context) -> PDFContainerView {
         let view = AskablePDFView()
         view.autoScales = true
         view.displayMode = .singlePageContinuous
-        view.displaysPageBreaks = false
+        // Page breaks are what give a page margins, and the right-hand one is the
+        // room the notes stand in (`PDFViewerController.setNoteRoom`). The rest are
+        // nothing: pages still follow one another without a gap.
+        view.displaysPageBreaks = true
+        view.pageBreakMargins = NSEdgeInsets(top: 0, left: 0, bottom: 0, right: notes.noteRoom)
         view.document = document
         view.onAskAboutSelection = onAskAboutSelection
-        // Captured now, and by value: once the filter is on, `backgroundColor` is the
-        // pre-inversion grey, so this is the only chance to learn PDFKit's own light colour.
-        let lightBackground = view.backgroundColor
+        // Ours rather than PDFKit's default, which is not drawn as the colour it reports —
+        // see `lightBackdrop`. `PDFBackdrop` is handed the same one.
+        let lightBackground = PDFPageDarkening.lightBackdrop
         context.coordinator.darkening = PDFDarkeningAnimator { [weak view] progress in
             guard let view else { return }
             PDFPageDarkening.apply(progress: progress, to: view, lightBackground: lightBackground)
@@ -296,18 +359,26 @@ struct PDFKitView: NSViewRepresentable {
         // flash the paper white and fade it down.
         context.coordinator.darkening?.set(dark: darkPages, followingSystem: followsSystem, animated: false)
         controller.setDarkPages(darkPages)
+        let container = PDFContainerView(pdfView: view, engine: engine, viewer: controller, model: notes)
         // Defer: attach() publishes state, which must not happen during view construction.
-        DispatchQueue.main.async { controller.attach(view: view) }
-        return view
+        DispatchQueue.main.async {
+            controller.attach(view: view)
+            container.observe()
+        }
+        return container
     }
 
-    func updateNSView(_ nsView: PDFView, context: Context) {
+    func updateNSView(_ container: PDFContainerView, context: Context) {
+        let nsView = container.pdfView
         (nsView as? AskablePDFView)?.onAskAboutSelection = onAskAboutSelection
         context.coordinator.darkening?.set(dark: darkPages, followingSystem: followsSystem, animated: true)
         controller.setDarkPages(darkPages)
         if nsView.document !== document {
             nsView.document = document
-            DispatchQueue.main.async { controller.attach(view: nsView) }
+            DispatchQueue.main.async {
+                controller.attach(view: nsView)
+                container.observe()
+            }
         }
     }
 }

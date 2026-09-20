@@ -2,16 +2,14 @@ import SwiftUI
 import XCTest
 @testable import ClaudePDF
 
-/// The transcript is one column of cards belonging to several conversations, and
-/// where each one begins and ends is what the panel draws — the labelled break,
-/// and the timeline rail restarting under it.
+/// The panel shows one conversation — the open tab's — and the timeline rail
+/// down its gutter starts and ends with it.
 ///
-/// These rows are computed in one pass *before* the `LazyVStack` sees them, which
-/// is the point of the type: a lazy stack builds rows on demand while the reader
-/// scrolls, so a row builder that reached for `cards[index - 1]` would be indexing
-/// an array the engine had appended to, prepended a restored transcript onto, or
-/// emptied since the row was made — a trap that fires on the scroll rather than on
-/// the edit that armed it.
+/// These rows are computed in one pass *before* the stack sees them, which is the
+/// point of the type: a row builder that reached for `cards[index - 1]` would be
+/// indexing an array the engine had appended to, prepended a restored transcript
+/// onto, or emptied since the row was made — a trap that fires on the scroll
+/// rather than on the edit that armed it.
 @MainActor
 final class TranscriptRowTests: XCTestCase {
 
@@ -56,31 +54,28 @@ final class TranscriptRowTests: XCTestCase {
         return ChatPanelView(engine: engine, viewer: PDFViewerController())
     }
 
-    func testEachConversationGetsOneStartAndOneEnd() async throws {
-        let rows = try await panel(cards: 6, threadEvery: 3).transcriptRows
+    /// Two conversations are two tabs, not two stretches of one scroll: the rows
+    /// are the open tab's, and opening the other swaps them whole.
+    func testRowsAreTheOpenTabsAndNoOtherConversations() async throws {
+        let panel = try await panel(cards: 5, threadEvery: 3)
 
-        XCTAssertEqual(rows.map(\.startsThread), [true, false, false, true, false, false])
-        XCTAssertEqual(rows.map(\.endsThread), [false, false, true, false, false, true])
-        XCTAssertEqual(rows.map(\.isFirstRow), [true, false, false, false, false, false])
-    }
+        XCTAssertEqual(panel.transcriptRows.map(\.card.question.text), ["q3", "q4"])
+        XCTAssertEqual(panel.transcriptRows.map(\.isFirst), [true, false])
+        XCTAssertEqual(panel.transcriptRows.map(\.isLast), [false, true])
 
-    /// The break is drawn from `startsThread` on every row but the first, so a
-    /// transcript that is all one conversation must offer nowhere to draw one.
-    func testOneConversationHasNoBreakToDraw() async throws {
-        let rows = try await panel(cards: 4).transcriptRows
-
-        XCTAssertEqual(rows.filter { $0.startsThread && !$0.isFirstRow }.count, 0)
-        XCTAssertEqual(rows.map(\.endsThread), [false, false, false, true])
+        panel.engine.selectThread(panel.engine.threads[0].id)
+        XCTAssertEqual(panel.transcriptRows.map(\.card.question.text), ["q0", "q1", "q2"])
+        XCTAssertEqual(panel.transcriptRows.map(\.isFirst), [true, false, false])
+        XCTAssertEqual(panel.transcriptRows.map(\.isLast), [false, false, true])
     }
 
     /// A lone answer opens and closes its conversation at once — the rail draws it
     /// as a dot with no line, and neither end may be reported as a continuation.
-    func testALoneAnswerBothStartsAndEndsItsConversation() async throws {
+    func testALoneAnswerIsBothEndsOfItsConversation() async throws {
         let rows = try await panel(cards: 1).transcriptRows
         XCTAssertEqual(rows.count, 1)
-        XCTAssertTrue(rows[0].isFirstRow)
-        XCTAssertTrue(rows[0].startsThread)
-        XCTAssertTrue(rows[0].endsThread)
+        XCTAssertTrue(rows[0].isFirst)
+        XCTAssertTrue(rows[0].isLast)
     }
 
     func testAnEmptyTranscriptHasNoRows() async throws {
