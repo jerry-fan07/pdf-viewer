@@ -1,9 +1,11 @@
 import XCTest
 @testable import ClaudePDF
 
-/// Phase 6: per-document history is display-only state that has to survive a
-/// reopen exactly as the reader left it — and has to *not* record things that
-/// would read as bugs on the way back (a half-streamed answer, a megabyte crop).
+/// Phase 6: per-document history has to survive a reopen exactly as the reader
+/// left it — and has to *not* record things that would read as bugs on the way
+/// back (a half-streamed answer, a megabyte crop). Since conversations became
+/// tabs it is no longer display-only: a saved conversation can be carried on, so
+/// a card also keeps what its question is retold from.
 final class HistoryTests: XCTestCase {
 
     private var directory: URL!
@@ -60,6 +62,25 @@ final class HistoryTests: XCTestCase {
         XCTAssertEqual(back.outputTokens, 310)
         XCTAssertEqual(back.costUSD, 0.0212)
         XCTAssertFalse(back.isStreaming, "a restored card is never mid-stream")
+    }
+
+    /// A resumed conversation retells its questions with the function that told
+    /// them the first time, so what that function reads has to come back too — the
+    /// text under a crop and the page the reader was on, neither of which is drawn.
+    func testRoundTripsWhatAReplayedQuestionIsRenderedFrom() throws {
+        var question = Question(text: "What is this figure?")
+        question.regionPage = 4
+        question.regionFallbackText = "Figure 2: recall at k"
+        question.pageHint = 4
+        var card = QACard(question: question)
+        card.answer = "A recall curve."
+        card.isStreaming = false
+
+        store.save(StoredHistory(documentURL: document, cards: [card]), for: document)
+        let back = QACard(stored: try XCTUnwrap(store.load(for: document)?.cards.first))
+
+        XCTAssertEqual(back.question.regionFallbackText, "Figure 2: recall at k")
+        XCTAssertEqual(back.question.pageHint, 4)
     }
 
     /// Where one conversation ended and the next began is part of the transcript:

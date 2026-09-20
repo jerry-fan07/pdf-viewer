@@ -5,13 +5,13 @@ import UniformTypeIdentifiers
 /// Per-document Q&A history, persisted as one JSON file per document
 /// (PLAN.md §6).
 ///
-/// **History is display-only.** Questions within a conversation do carry the ones
-/// before them, but that thread is held live in `ChatEngine.conversation` and is
-/// never reconstructed from this file: a reopened document has a freshly attached
-/// copy and no provider still remembers yesterday's thread, so restoring one would
-/// mean re-billing an old conversation to imply a continuity that doesn't exist.
-/// What this restores is the transcript the reader was looking at — read back as
-/// earlier conversations, with `threadID` marking where each one ended.
+/// **One flat list of cards, many conversations.** `threadID` is what files each
+/// card under its tab on the rail, so there is no second structure to keep in
+/// step with the first. A saved conversation can be reopened and carried on: no
+/// provider still remembers yesterday's thread, so the engine rebuilds its turns
+/// from these cards and replays them (`Conversation.init(resuming:)`) — which is
+/// why a card keeps everything a replayed turn is rendered from, and not only
+/// what the panel draws.
 ///
 /// Each card records the provider and model that answered it, because a restored
 /// transcript can predate a provider switch — the panel header only ever names
@@ -26,6 +26,15 @@ struct StoredHistory: Codable, Sendable, Equatable {
     /// traced back to its document. The file *name* is the hashed document key.
     var documentPath: String
     var cards: [StoredCard]
+    /// Where each conversation is stuck to the document. Optional, so a file
+    /// written before notes had places still decodes; those conversations are
+    /// placed by what their first question was about (`ChatEngine.inferredAnchor`).
+    var anchors: [StoredAnchor]?
+}
+
+struct StoredAnchor: Codable, Sendable, Equatable {
+    var threadID: UUID
+    var anchor: NoteAnchor
 }
 
 struct StoredCard: Codable, Sendable, Equatable {
@@ -39,6 +48,11 @@ struct StoredCard: Codable, Sendable, Equatable {
     var selectedText: String?
     var selectedTextPage: Int?
     var regionPage: Int?
+    /// The text under the crop and the page the reader was on — neither is drawn,
+    /// both are part of how the question is retold when its conversation is
+    /// resumed. Optional, so files written before tabs existed still decode.
+    var regionFallbackText: String?
+    var pageHint: Int?
     /// A downscaled copy of the crop — display-only, so the full-resolution PNG
     /// that went to the model is not worth carrying in every history file.
     var regionThumbnailPNG: Data?

@@ -70,6 +70,13 @@ struct Conversation: Equatable {
 
     var isEmpty: Bool { turns.isEmpty && handle == nil }
 
+    /// Forget where a provider was keeping this thread, and keep the thread: with
+    /// no handle every turn counts as unhandled, so the next question replays them.
+    mutating func dropHandle() {
+        handle = nil
+        handledTurns = 0
+    }
+
     /// The tail `handle` does not already account for. All of it when there is no
     /// handle at all, which is how a mid-thread provider switch keeps its thread.
     var unhandledTurns: [ConversationTurn] {

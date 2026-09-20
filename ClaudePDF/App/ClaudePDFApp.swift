@@ -40,7 +40,10 @@ struct DocumentWindow: View {
     @StateObject private var viewer = PDFViewerController()
     @StateObject private var engine = ChatEngine(provider: ProviderFactory.make())
     @State private var pdf: PDFDocument?
-    @State private var chatVisible = true
+    /// The notes stuck to the pages, and whether the selected one is unfolded. A
+    /// document opens with them all shut: tabs on the pages they are about, which
+    /// is what makes folding a conversation away different from losing it.
+    @StateObject private var notes = PageNotesModel()
     @State private var thumbnailsVisible = false
     @State private var cropMode = false
     @State private var pageField = "1"
@@ -83,6 +86,8 @@ struct DocumentWindow: View {
     }
 
     var body: some View {
+        // The conversations are not a pane of this window: they are notes stuck to
+        // the pages, and live in the viewer with them — see `PDFContainerView`.
         HSplitView {
             if thumbnailsVisible {
                 PDFThumbnailSidebar(controller: viewer, darkPages: darkPages, followsSystem: followsSystem)
@@ -95,6 +100,8 @@ struct DocumentWindow: View {
                         PDFKitView(
                             document: pdf,
                             controller: viewer,
+                            engine: engine,
+                            notes: notes,
                             darkPages: darkPages,
                             followsSystem: followsSystem,
                             onAskAboutSelection: captureSelection
@@ -108,11 +115,6 @@ struct DocumentWindow: View {
                 }
             }
             .frame(minWidth: 260, maxWidth: .infinity, maxHeight: .infinity)
-
-            if chatVisible {
-                ChatPanelView(engine: engine, viewer: viewer)
-                    .frame(minWidth: 300, idealWidth: 360, maxWidth: 900)
-            }
         }
         // The whole window, not just the pages: toolbar, sidebar and chat panel go dark
         // together. Applied here rather than to `NSApp.appearance` precisely because it is
@@ -187,13 +189,12 @@ struct DocumentWindow: View {
             .help("Darken this window (⇧⌘D) — Settings sets the default for other windows")
 
             Button {
-                chatVisible.toggle()
-                if chatVisible { engine.requestComposerFocus() }
+                if notes.isOpen { notes.isOpen = false } else { openNote() }
             } label: {
                 Label("Ask", systemImage: "bubble.left.and.text.bubble.right")
             }
             .keyboardShortcut("i", modifiers: [.command, .option])
-            .help("Show or hide the chat panel (⌥⌘I)")
+            .help("Open or fold away a conversation (⌥⌘I) — its tab stays on the page it is about")
         }
     }
 
@@ -273,15 +274,21 @@ struct DocumentWindow: View {
                 .keyboardShortcut("f", modifiers: .command)
             Button("") { captureSelection() }
                 .keyboardShortcut("l", modifiers: .command)
-            // Start a new conversation about the same document (⇧⌘N). Nothing is
-            // re-prepared, so this is as cheap as it looks; it is in the composer's
-            // reach because it is the thing you press between two subjects.
+            // A new note on the page being read (⇧⌘N): the thing you press between
+            // two subjects.
+            // Nothing is re-prepared, so this is as cheap as it looks.
             Button("") {
-                engine.startNewThread()
-                chatVisible = true
+                engine.startNewThread(at: viewer.currentPageAnchor)
+                notes.isOpen = true
                 engine.requestComposerFocus()
             }
             .keyboardShortcut("n", modifiers: [.command, .shift])
+            // From note to note through the document, on the keys every tabbed app
+            // uses for it. The viewer goes to the page the note is on.
+            Button("") { stepTab(by: -1) }
+                .keyboardShortcut("[", modifiers: [.command, .shift])
+            Button("") { stepTab(by: 1) }
+                .keyboardShortcut("]", modifiers: [.command, .shift])
             if cropMode {
                 Button("") { cropMode = false }
                     .keyboardShortcut(.cancelAction)
@@ -292,13 +299,38 @@ struct DocumentWindow: View {
         .accessibilityHidden(true)
     }
 
+    private func stepTab(by offset: Int) {
+        engine.selectAdjacentThread(offset: offset)
+        notes.isOpen = true
+    }
+
+    /// Unfold a note without having clicked one: the selected conversation if it
+    /// has anything in it — wherever in the document it is, the viewer goes there —
+    /// and otherwise a new one, on the page being read.
+    private func openNote() {
+        if engine.selectedThread?.title == nil {
+            engine.startNewThread(at: viewer.currentPageAnchor)
+        }
+        notes.isOpen = true
+        engine.requestComposerFocus()
+    }
+
+    /// A passage is about to be asked about. With a note open the question is a
+    /// follow-up in it; with none, the passage gets a note of its own, level with it.
+    private func noteForPassage(at anchor: NoteAnchor?) {
+        if !notes.isOpen {
+            engine.startNewThread(at: anchor ?? viewer.currentPageAnchor)
+        }
+        notes.isOpen = true
+    }
+
     // MARK: Ask flows
 
     /// "Ask About Selection" (context menu or ⌘L): stage the selection and focus the composer.
     private func captureSelection() {
         guard let selection = viewer.selectionInfo() else { return }
+        noteForPassage(at: viewer.selectionAnchor())
         engine.pendingSelection = selection
-        chatVisible = true
         engine.requestComposerFocus()
     }
 
@@ -308,7 +340,7 @@ struct DocumentWindow: View {
               let crop = CropExtractor.makeCrop(viewRect: rect, overlay: overlay, pdfView: pdfView)
         else { return }
 
-        chatVisible = true
+        noteForPassage(at: viewer.anchor(forViewRect: rect, in: overlay))
         // The capability-based degradation of PLAN.md §4 lives in the engine, which
         // has to re-run it whenever the provider changes under a staged crop.
         engine.stage(crop: crop, focusComposer: true)

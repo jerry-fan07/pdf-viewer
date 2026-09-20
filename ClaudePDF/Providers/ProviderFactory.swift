@@ -89,6 +89,10 @@ enum AppSettings {
     static let deepseekModelKey = "deepseek.model"
     static let deepseekThinkingKey = "deepseek.thinking"
     static let ocrEnabledKey = "ocr.enabled"
+    /// How wide a note's sheet is, in *page* points. A new key, not the old panel's:
+    /// that one held window points, and a panel dragged wide would come back as a
+    /// sheet wider than the page it is stuck to.
+    static let noteSheetWidthKey = "notes.sheetWidth"
 
     /// OCR for pages with no text layer, on the text-only path. On by default:
     /// without it a scanned document is a dead end there.

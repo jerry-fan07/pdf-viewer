@@ -5,11 +5,18 @@ import AppKit
 /// boxes and no chips — answers sit directly on the paper, separated by hairlines,
 /// threaded on a timeline rail, under a per-page histogram of what the
 /// conversation has cited so far.
+///
+/// It shows one conversation: whichever note's tab is open (`PageNotesView`). Everything
+/// here that counts or lists — the answers summary, the histogram, the transcript —
+/// is about that conversation and not about the document's whole history.
 struct ChatPanelView: View {
     @ObservedObject var engine: ChatEngine
     /// Observed, not just held: the citation histogram needs `pageCount` when the
     /// document finishes loading and `currentPageNumber` as the reader scrolls.
     @ObservedObject var viewer: PDFViewerController
+    /// Fold the sheet back into its tab. Nil where there is no tab to fold into
+    /// (a snapshot, a test), and the button goes with it.
+    var onCollapse: (() -> Void)?
 
     @State private var input = ""
     @FocusState private var inputFocused: Bool
@@ -29,6 +36,9 @@ struct ChatPanelView: View {
         .onChange(of: engine.composerFocusRequest) { _, _ in
             inputFocused = true
         }
+        // A sheet is unfolded *by* being asked for — a tab, ⌘L, a crop — and the
+        // request that unfolded it was made before there was a composer to hear it.
+        .onAppear { inputFocused = true }
     }
 
     // MARK: Header
@@ -42,17 +52,19 @@ struct ChatPanelView: View {
                     .foregroundStyle(PanelInk.faint)
                 providerMenu
                 Spacer(minLength: 8)
-                if !engine.conversation.isEmpty {
-                    newConversationButton
-                }
-                if engine.hasHistory {
-                    clearButton
-                }
                 if let summary = answersSummary {
                     Text(summary)
                         .font(.system(size: 11))
                         .monospacedDigit()
                         .foregroundStyle(PanelInk.faint)
+                        .lineLimit(1)
+                        .fixedSize()
+                }
+                if !engine.threadCards.isEmpty {
+                    deleteButton
+                }
+                if onCollapse != nil {
+                    collapseButton
                 }
             }
             Text(engine.documentTitle ?? "Untitled")
@@ -67,45 +79,45 @@ struct ChatPanelView: View {
     /// "7 answers · $0.04". The cost only appears once something has cost
     /// something — the subscription path has no per-token bill to sum.
     private var answersSummary: String? {
-        let count = engine.cards.count
+        let cards = engine.threadCards
+        let count = cards.count
         guard count > 0 else { return nil }
         var summary = count == 1 ? "1 answer" : "\(count) answers"
-        let cost = engine.cards.compactMap(\.costUSD).reduce(0, +)
+        let cost = cards.compactMap(\.costUSD).reduce(0, +)
         if cost > 0 {
             summary += " · " + TokenPricing.format(cost)
         }
         return summary
     }
 
-    /// Drops what the next question would otherwise carry, and nothing else — the
-    /// document stays prepared, so this costs nothing and the transcript above it
-    /// stays where it is. Shown only once there is a conversation to end.
-    private var newConversationButton: some View {
-        Button {
-            engine.startNewThread()
-        } label: {
-            Image(systemName: "square.and.pencil")
-                .font(.system(size: 10))
-                .foregroundStyle(PanelInk.faint)
-        }
-        .buttonStyle(.plain)
-        .disabled(engine.isStreaming)
-        .help("New conversation — the next question starts fresh instead of "
-              + "following these \(engine.conversation.turns.count). The document stays "
-              + "prepared, so nothing is re-uploaded and no cache is re-paid.")
-    }
-
-    private var clearButton: some View {
+    /// This conversation, and only this one — the other tabs stay. (All of them
+    /// at once is on any tab's context menu, behind a confirmation.)
+    private var deleteButton: some View {
         Button(role: .destructive) {
-            engine.clearHistory()
+            // Folded first: a deleted note must not unfold whichever one the engine
+            // lands on next, on whatever page that is.
+            onCollapse?()
+            engine.deleteThread(engine.threadID)
         } label: {
             Image(systemName: "trash")
                 .font(.system(size: 10))
                 .foregroundStyle(PanelInk.faint)
         }
         .buttonStyle(.plain)
-        .disabled(engine.isStreaming)
-        .help("Clear this document's saved questions and answers")
+        .disabled(engine.isStreamingHere)
+        .help("Delete this conversation and its tab")
+    }
+
+    private var collapseButton: some View {
+        Button {
+            onCollapse?()
+        } label: {
+            Image(systemName: "chevron.right.2")
+                .font(.system(size: 9, weight: .medium))
+                .foregroundStyle(PanelInk.faint)
+        }
+        .buttonStyle(.plain)
+        .help("Collapse to the tabs (⌥⌘I) — the conversation is saved and stays on its tab")
     }
 
     /// The provider name doubles as the switcher (Phase 7). Disabled while an
@@ -197,7 +209,7 @@ struct ChatPanelView: View {
     private var citedPages: [Int] {
         let pageCount = viewer.pageCount
         var pages = Set<Int>()
-        for card in engine.cards { pages.formUnion(card.citedPages(inDocumentOf: pageCount)) }
+        for card in engine.threadCards { pages.formUnion(card.citedPages(inDocumentOf: pageCount)) }
         return pages.sorted()
     }
 
@@ -263,7 +275,7 @@ struct ChatPanelView: View {
 
     // MARK: Transcript
 
-    /// One row of the transcript, carrying where it sits in its conversation.
+    /// One row of the transcript, carrying where it sits in the conversation.
     ///
     /// Worked out here rather than inside the row builder, and this is not a
     /// tidying: `LazyVStack` builds rows on demand *while the reader scrolls*, so
@@ -273,28 +285,26 @@ struct ChatPanelView: View {
     /// a trap, and it fires on the scroll rather than on the edit that caused it.
     /// A row that knows its own place needs no neighbours.
     ///
-    /// Internal rather than private so the boundaries can be tested directly —
-    /// where a conversation starts and ends is what the panel draws, and it is
-    /// worth asserting somewhere other than by eye.
+    /// Internal rather than private so it can be tested directly — which cards
+    /// the open tab shows, and where its rail starts and ends, are worth asserting
+    /// somewhere other than by eye.
     struct TranscriptRow: Identifiable {
         let card: QACard
-        let isFirstRow: Bool
-        let startsThread: Bool
-        let endsThread: Bool
+        let isFirst: Bool
+        let isLast: Bool
 
         var id: UUID { card.id }
     }
 
+    /// The open conversation's cards, and no other's: a second conversation is a
+    /// second tab, not a further stretch of the same scroll.
     var transcriptRows: [TranscriptRow] {
-        let cards = engine.cards
+        let cards = engine.threadCards
         return cards.indices.map { index in
-            let thread = cards[index].threadID
-            return TranscriptRow(
+            TranscriptRow(
                 card: cards[index],
-                isFirstRow: index == cards.startIndex,
-                startsThread: index == cards.startIndex || cards[index - 1].threadID != thread,
-                endsThread: index == cards.index(before: cards.endIndex)
-                    || cards[index + 1].threadID != thread
+                isFirst: index == cards.startIndex,
+                isLast: index == cards.index(before: cards.endIndex)
             )
         }
     }
@@ -308,30 +318,23 @@ struct ChatPanelView: View {
                 // without: scrolling while an answer streams. See `transcript`.
                 VStack(alignment: .leading, spacing: 0) {
                     statusItems
-                    ForEach(transcriptRows) { row in
-                        if !row.isFirstRow {
-                            if row.startsThread {
-                                // A stronger break than the hairline between two
-                                // answers, because it means something stronger:
-                                // nothing above it was in front of the model when
-                                // the answers below it were written.
-                                ThreadBreak()
-                            } else {
-                                Rectangle().fill(PanelInk.hairline)
-                                    .frame(height: 1)
-                                    .padding(.leading, AnswerRail.width)
-                                    .padding(.trailing, 24)
-                            }
+                    let rows = transcriptRows
+                    if rows.isEmpty {
+                        emptyConversation
+                    }
+                    ForEach(rows) { row in
+                        if !row.isFirst {
+                            Rectangle().fill(PanelInk.hairline)
+                                .frame(height: 1)
+                                .padding(.leading, AnswerRail.width)
+                                .padding(.trailing, 24)
                         }
                         QACardView(card: row.card, viewer: viewer)
                             .padding(.leading, AnswerRail.width)
                             .padding(.trailing, 24)
                             .padding(.vertical, 18)
                             .overlay(alignment: .topLeading) {
-                                // The rail threads a conversation, so it restarts
-                                // with one: each thread gets its own solid first
-                                // dot, and the line breaks where they do.
-                                AnswerRail(isFirst: row.startsThread, isLast: row.endsThread)
+                                AnswerRail(isFirst: row.isFirst, isLast: row.isLast)
                             }
                             .id(row.id)
                     }
@@ -349,16 +352,36 @@ struct ChatPanelView: View {
             // fight over the offset the reader cannot win: every 20 ms the view
             // is dragged back to the bottom, which is most of why scrolling during
             // an answer felt broken. Twice an answer does the same job.
-            .onChange(of: engine.cards.count) { follow(proxy) }
-            .onChange(of: engine.isStreaming) {
-                if !engine.isStreaming { follow(proxy) }
+            .onChange(of: engine.threadCards.count) { follow(proxy) }
+            .onChange(of: engine.isStreamingHere) {
+                if !engine.isStreamingHere { follow(proxy) }
             }
+            // A tab opens where its conversation left off, which is its end.
+            .onChange(of: engine.threadID) { follow(proxy) }
         }
     }
 
     private func follow(_ proxy: ScrollViewProxy) {
-        guard let last = engine.cards.last else { return }
+        guard let last = engine.threadCards.last else { return }
         proxy.scrollTo(last.id, anchor: .bottom)
+    }
+
+    /// What a tab nothing has been asked in shows, instead of nothing: the three
+    /// ways a question can start, since two of them begin on the page rather than
+    /// in the composer below.
+    private var emptyConversation: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("A new conversation")
+                .font(.system(size: 18))
+                .kerning(-0.3)
+                .foregroundStyle(PanelInk.dim)
+            Text("Ask below — or select text and press ⌘L, or drag a region with ⇧⌘A. "
+                 + "It is saved on its tab, beside the page.")
+                .font(.system(size: 12))
+                .lineSpacing(3)
+                .foregroundStyle(PanelInk.fainter)
+        }
+        .padding(EdgeInsets(top: 18, leading: AnswerRail.width, bottom: 18, trailing: 24))
     }
 
     /// Everything that is not an answer — the unconfigured-provider notice, attach
@@ -442,7 +465,7 @@ struct ChatPanelView: View {
                     .lineLimit(1...4)
                     .focused($inputFocused)
                     .onSubmit(submit)
-                if engine.isStreaming {
+                if engine.isStreamingHere {
                     Button(action: engine.cancel) {
                         Image(systemName: "stop.circle")
                             .font(.system(size: 13))
@@ -458,7 +481,9 @@ struct ChatPanelView: View {
                     }
                     .buttonStyle(.plain)
                     .disabled(!canSubmit)
-                    .help("Ask")
+                    .help(engine.isStreaming
+                          ? "An answer is still arriving in another conversation — its tab is marked"
+                          : "Ask")
                 }
             }
         }
@@ -473,8 +498,9 @@ struct ChatPanelView: View {
             .foregroundStyle(PanelInk.fainter)
     }
 
+    /// One answer at a time, whichever tab it is arriving in.
     private var canSubmit: Bool {
-        !input.trimmingCharacters(in: .whitespaces).isEmpty
+        !engine.isStreaming && !input.trimmingCharacters(in: .whitespaces).isEmpty
     }
 
     private func submit() {
@@ -499,34 +525,6 @@ struct ChatPanelView: View {
         engine.pendingCrop = nil
         engine.composerNotice = nil
         input = ""
-    }
-}
-
-// MARK: - Thread break
-
-/// Where one conversation ended and the next began — pressed by the reader, or
-/// created by reopening the document onto a transcript the new conversation
-/// cannot see. Full width, rail gutter included, because the rail is exactly what
-/// it interrupts.
-///
-/// Internal rather than private so the snapshot harness renders the real thing.
-struct ThreadBreak: View {
-    var body: some View {
-        HStack(spacing: 8) {
-            rule
-            Text("new conversation")
-                .font(.system(size: 10))
-                .kerning(0.3)
-                .foregroundStyle(PanelInk.fainter)
-            rule
-        }
-        .padding(EdgeInsets(top: 6, leading: 24, bottom: 6, trailing: 24))
-        .help("Questions below this line don't carry the ones above it. The "
-              + "document is still the same prepared copy.")
-    }
-
-    private var rule: some View {
-        Rectangle().fill(PanelInk.hairlineStrong).frame(height: 1)
     }
 }
 

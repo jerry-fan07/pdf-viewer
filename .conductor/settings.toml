@@ -23,7 +23,10 @@ command = "bash Scripts/dev-install.sh"
 # be up at once. They get one Dock tile each — that is the price of side by side.
 available_in = [ "local" ]
 icon = "play"
-command = "xcodegen generate && xcodebuild -project ClaudePDF.xcodeproj -scheme ClaudePDF -configuration Debug -destination 'platform=macOS' -derivedDataPath DerivedData build && exec ./DerivedData/Build/Products/Debug/ClaudePDF.app/Contents/MacOS/ClaudePDF"
+# Through dev-install.sh all the same, for its signing: an ad-hoc build is a
+# stranger to the keychain after every rebuild, and asks for the login password
+# once per API key each time.
+command = "IN_PLACE=1 bash Scripts/dev-install.sh"
 
 [scripts.run.test]
 available_in = [ "local" ]
