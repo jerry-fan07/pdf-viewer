@@ -293,7 +293,7 @@ final class PDFViewerController: ObservableObject {
 // MARK: - Representables
 
 /// PDFView subclass that adds "Ask About Selection" to the text-selection context menu.
-final class AskablePDFView: PDFView {
+class AskablePDFView: PDFView {
     var onAskAboutSelection: (() -> Void)?
 
     override func menu(for event: NSEvent) -> NSMenu? {
