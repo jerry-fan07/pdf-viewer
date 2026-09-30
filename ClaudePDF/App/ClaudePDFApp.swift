@@ -280,6 +280,9 @@ struct DocumentWindow: View {
             engine.attach(PDFDocumentInfo(fileURL: url, pageCount: doc.pageCount))
         }
         #if DEBUG
+        if let pane = ProcessInfo.processInfo.environment["CLAUDEPDF_PANE"] {
+            navigationPane = NavigationPane(rawValue: pane)
+        }
         DebugSnapshot.scheduleIfRequested(engine: engine, viewer: viewer)
         #endif
     }
