@@ -70,6 +70,7 @@ final class PinnedNotes: ObservableObject {
     @Published private(set) var revision = 0
 
     private let store: PinnedNoteStore
+    private var textIndex = PDFTextIndex()
     private var document: PDFDocument?
     private var documentURL: URL?
 
@@ -79,6 +80,7 @@ final class PinnedNotes: ObservableObject {
 
     func load(for url: URL?, document: PDFDocument) {
         self.document = document
+        textIndex = PDFTextIndex()
         documentURL = url
         notes = url.map(store.load(for:)) ?? []
         for note in notes { place(note) }
@@ -116,8 +118,8 @@ final class PinnedNotes: ObservableObject {
 
     func delete(_ id: UUID) {
         guard let index = notes.firstIndex(where: { $0.id == id }) else { return }
-        notes.remove(at: index)
-        removeAnnotations(for: id)
+        let removed = notes.remove(at: index)
+        removeAnnotations(for: id, page: removed.page)
         if focusedID == id { focusedID = nil }
         persist()
     }
@@ -145,6 +147,12 @@ final class PinnedNotes: ObservableObject {
 
     private func passage(_ quote: String, on page: PDFPage) -> PDFSelection? {
         guard let document else { return nil }
+        // The answer-to-source locator first: it survives hyphenation and ligatures.
+        let number = document.index(for: page) + 1
+        if let match = SourceLocator.locate(quote, in: document, index: textIndex, nearPage: number),
+           match.pageNumber == number {
+            return match.selection
+        }
         // A selection's text comes back with its line breaks; the first line is
         // enough to find it, and is less likely to be broken by hyphenation.
         let probe = quote.split(whereSeparator: \.isNewline).first.map(String.init) ?? quote
@@ -162,7 +170,7 @@ final class PinnedNotes: ObservableObject {
 
     private func place(_ note: PinnedNote) {
         guard let document, let page = document.page(at: note.page - 1) else { return }
-        removeAnnotations(for: note.id)
+        removeAnnotations(for: note.id, page: note.page)
         let bounds = page.bounds(for: .cropBox)
         let size = PinnedNoteAnnotation.size
         var top = bounds.maxY - CGFloat(note.y ?? 0) * bounds.height - 6
@@ -187,15 +195,13 @@ final class PinnedNotes: ObservableObject {
         }
     }
 
-    private func removeAnnotations(for id: UUID) {
-        guard let document else { return }
+    /// A note's annotations are all on its own page, which is fixed.
+    private func removeAnnotations(for id: UUID, page number: Int) {
+        guard let page = document?.page(at: number - 1) else { return }
         let tag = PinnedNoteAnnotation.tag(id)
-        for index in 0..<document.pageCount {
-            guard let page = document.page(at: index) else { continue }
-            for annotation in page.annotations where annotation.userName == tag {
-                page.removeAnnotation(annotation)
-                revision += 1
-            }
+        for annotation in page.annotations where annotation.userName == tag {
+            page.removeAnnotation(annotation)
+            revision += 1
         }
     }
 

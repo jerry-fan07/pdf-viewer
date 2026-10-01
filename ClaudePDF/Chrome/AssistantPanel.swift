@@ -30,7 +30,7 @@ struct AssistantPanel: View {
                 transcript
                 composer
             case .notes:
-                SavedNotesList(pins: pins, viewer: viewer, onAsk: { tab = .chat })
+                SavedNotesList(pins: pins, viewer: viewer, engine: engine, onAsk: { tab = .chat })
             }
         }
         .background(ChromeInk.panel)
@@ -822,6 +822,7 @@ private struct ThinkingRow: View {
 private struct SavedNotesList: View {
     @ObservedObject var pins: PinnedNotes
     @ObservedObject var viewer: PDFViewerController
+    @ObservedObject var engine: ChatEngine
     var onAsk: () -> Void
 
     var body: some View {
@@ -870,7 +871,8 @@ private struct SavedNotesList: View {
                             ForEach(pins.pages, id: \.self) { page in
                                 Section {
                                     ForEach(pins.notes.filter { $0.page == page }) { note in
-                                        SavedNoteCard(note: note, isFocused: pins.focusedID == note.id) {
+                                        SavedNoteCard(note: note, isFocused: pins.focusedID == note.id,
+                                                      onOpenChat: chatOpener(for: note)) {
                                             open(note)
                                         } onDelete: {
                                             pins.delete(note.id)
@@ -918,6 +920,16 @@ private struct SavedNotesList: View {
         .background(ChromeInk.panel)
     }
 
+    /// Back to the conversation the note was saved from — while it still exists.
+    private func chatOpener(for note: PinnedNote) -> (() -> Void)? {
+        guard let thread = note.threadID, engine.threads.contains(where: { $0.id == thread && $0.title != nil })
+        else { return nil }
+        return {
+            engine.selectThread(thread)
+            onAsk()
+        }
+    }
+
     private func open(_ note: PinnedNote) {
         pins.focusedID = note.id
         if let quote = note.quote, viewer.reveal(quote: quote, nearPage: note.page) { return }
@@ -928,6 +940,7 @@ private struct SavedNotesList: View {
 private struct SavedNoteCard: View {
     let note: PinnedNote
     let isFocused: Bool
+    var onOpenChat: (() -> Void)?
     let onOpen: () -> Void
     let onDelete: () -> Void
     @State private var hovering = false
@@ -976,6 +989,12 @@ private struct SavedNoteCard: View {
                     Text(provider).lineLimit(1)
                 }
                 Spacer(minLength: 4)
+                if let onOpenChat {
+                    Button("Open chat", action: onOpenChat)
+                        .buttonStyle(.plain)
+                        .foregroundStyle(ChromeInk.accent)
+                        .help("Go back to the conversation this answer came from")
+                }
                 Button(expanded ? "Less" : "More") { expanded.toggle() }
                     .buttonStyle(.plain)
                     .foregroundStyle(ChromeInk.accent)

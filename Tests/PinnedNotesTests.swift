@@ -65,6 +65,19 @@ final class PinnedNotesTests: XCTestCase {
         XCTAssertFalse(highlights.isEmpty)
     }
 
+    /// A selection a reader actually makes runs over the wrap — and comes back with
+    /// the line break in it.
+    func testAWrappedPassageIsHighlightedLineByLine() throws {
+        let (notes, document) = makeNotes()
+        let quote = "We locate each quotation on the page and highlight it, which converts\nan assertion into evidence the reader can see for themselves."
+        let saved = try XCTUnwrap(notes.save(card: card(quote: quote)))
+        let page = try XCTUnwrap(document.page(at: 1))
+        let lines = Set(page.annotations
+            .filter { $0.type == "Highlight" && $0.userName == PinnedNoteAnnotation.tag(saved.id) }
+            .map { Int($0.bounds.minY.rounded()) })
+        XCTAssertGreaterThanOrEqual(lines.count, 2)
+    }
+
     func testSavingTheSameAnswerTwiceKeepsOneNote() {
         let (notes, document) = makeNotes()
         let answer = card()
