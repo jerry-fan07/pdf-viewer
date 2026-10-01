@@ -130,9 +130,18 @@ final class CanvasPDFView: AskablePDFView {
     var tool: CanvasTool = .select {
         didSet { window?.invalidateCursorRects(for: self) }
     }
+    /// A saved note's marker was clicked.
+    var onPinnedNoteClicked: ((UUID) -> Void)?
     private var lastDrag: NSPoint?
 
     override func mouseDown(with event: NSEvent) {
+        // A note's marker answers to every tool: it is a button on the page.
+        let point = convert(event.locationInWindow, from: nil)
+        if let page = page(for: point, nearest: false),
+           let marker = page.annotation(at: convert(point, to: page)) as? PinnedNoteAnnotation {
+            onPinnedNoteClicked?(marker.noteID)
+            return
+        }
         switch tool {
         case .hand:
             lastDrag = event.locationInWindow
@@ -213,6 +222,7 @@ struct CanvasPDFRepresentable: NSViewRepresentable {
     var darkPages = false
     var followsSystem = false
     var onAskAboutSelection: (() -> Void)? = nil
+    var onPinnedNoteClicked: ((UUID) -> Void)? = nil
 
     final class Coordinator {
         var darkening: PDFDarkeningAnimator?
@@ -229,6 +239,7 @@ struct CanvasPDFRepresentable: NSViewRepresentable {
         view.pageShadowsEnabled = !darkPages
         view.document = document
         view.onAskAboutSelection = onAskAboutSelection
+        view.onPinnedNoteClicked = onPinnedNoteClicked
         context.coordinator.darkening = PDFDarkeningAnimator { [weak view] progress in
             guard let view else { return }
             PDFPageDarkening.apply(progress: progress, to: view, lightBackground: ChromeInk.canvasLightNS)
@@ -244,6 +255,7 @@ struct CanvasPDFRepresentable: NSViewRepresentable {
 
     func updateNSView(_ view: CanvasPDFView, context: Context) {
         view.onAskAboutSelection = onAskAboutSelection
+        view.onPinnedNoteClicked = onPinnedNoteClicked
         // A page shadow inverts into a glow, so dark pages go without.
         view.pageShadowsEnabled = !darkPages
         context.coordinator.darkening?.set(dark: darkPages, followingSystem: followsSystem, animated: true)

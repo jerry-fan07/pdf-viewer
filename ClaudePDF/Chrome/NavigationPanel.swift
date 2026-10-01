@@ -59,6 +59,8 @@ struct NavigationPanel: View {
     @ObservedObject var viewer: PDFViewerController
     @ObservedObject var engine: ChatEngine
     var darkPages: Bool
+    /// Changes whenever a note is put on a page or taken off one — the thumbnails show them.
+    var notesRevision = 0
     var onClose: () -> Void
     var onOpenConversation: () -> Void
 
@@ -71,7 +73,7 @@ struct NavigationPanel: View {
             HDivider()
             switch pane {
             case .pages:
-                ThumbnailList(document: document, viewer: viewer, darkPages: darkPages)
+                ThumbnailList(document: document, viewer: viewer, darkPages: darkPages, revision: notesRevision)
             case .bookmarks:
                 OutlineList(document: document, viewer: viewer)
             case .search:
@@ -116,8 +118,8 @@ struct PanelEmptyState: View {
 private final class ThumbnailCache: ObservableObject {
     private var images: [String: NSImage] = [:]
 
-    func image(for page: PDFPage, index: Int, dark: Bool) -> NSImage {
-        let key = "\(index)|\(dark)"
+    func image(for page: PDFPage, index: Int, dark: Bool, revision: Int) -> NSImage {
+        let key = "\(index)|\(dark)|\(revision)"
         if let cached = images[key] { return cached }
         var image = page.thumbnail(of: CGSize(width: 260, height: 340), for: .cropBox)
         if dark { image = PageImageDarkening.darken(image) ?? image }
@@ -149,6 +151,7 @@ private struct ThumbnailList: View {
     let document: PDFDocument
     @ObservedObject var viewer: PDFViewerController
     var darkPages: Bool
+    var revision: Int
     @StateObject private var cache = ThumbnailCache()
 
     var body: some View {
@@ -178,7 +181,7 @@ private struct ThumbnailList: View {
             viewer.scroll(toPage: number)
         } label: {
             VStack(spacing: 5) {
-                Image(nsImage: cache.image(for: page, index: index, dark: darkPages))
+                Image(nsImage: cache.image(for: page, index: index, dark: darkPages, revision: revision))
                     .resizable()
                     .scaledToFit()
                     .frame(width: 104)

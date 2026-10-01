@@ -44,6 +44,8 @@ struct DocumentWindow: View {
     @StateObject private var viewer = PDFViewerController()
     @StateObject private var engine = ChatEngine(provider: ProviderFactory.make())
     @StateObject private var canvas = CanvasState()
+    @StateObject private var pins = PinnedNotes()
+    @State private var assistantTab: AssistantTab = .chat
     @State private var pdf: PDFDocument?
     @State private var navigationPane: NavigationPane? = .pages
     @State private var lastNavigationPane: NavigationPane = .pages
@@ -106,6 +108,7 @@ struct DocumentWindow: View {
                         viewer: viewer,
                         engine: engine,
                         darkPages: darkPages,
+                        notesRevision: pins.revision,
                         onClose: { self.navigationPane = nil },
                         onOpenConversation: { assistantOpen = true }
                     )
@@ -119,10 +122,12 @@ struct DocumentWindow: View {
                     AssistantPanel(
                         engine: engine,
                         viewer: viewer,
+                        pins: pins,
+                        tab: $assistantTab,
                         onClose: { assistantOpen = false },
                         onSnapshot: { cropMode = true }
                     )
-                    .frame(width: 340)
+                    .frame(width: 356)
                 }
             }
             StatusBar(viewer: viewer, canvas: canvas, engine: engine)
@@ -133,6 +138,11 @@ struct DocumentWindow: View {
         .background(hiddenShortcuts)
         .background(TrafficLightAligner())
         .onAppear(perform: load)
+        // A marker clicked on the page opens its note beside it.
+        .onChange(of: pins.activation) { _, _ in
+            assistantOpen = true
+            assistantTab = .notes
+        }
         .onChange(of: navigationPane) { _, pane in
             if let pane { lastNavigationPane = pane }
         }
@@ -151,7 +161,8 @@ struct DocumentWindow: View {
                     canvas: canvas,
                     darkPages: darkPages,
                     followsSystem: followsSystem,
-                    onAskAboutSelection: captureSelection
+                    onAskAboutSelection: captureSelection,
+                    onPinnedNoteClicked: { pins.activate($0) }
                 )
                 if cropMode {
                     CropOverlay(onCrop: handleCrop)
@@ -276,6 +287,7 @@ struct DocumentWindow: View {
         viewer.configureRestore(for: fileURL)   // before the PDFView attaches
         let doc = PDFDocument(data: document.data)
         pdf = doc
+        if let doc { pins.load(for: fileURL, document: doc) }
         if let doc, let url = fileURL {
             engine.attach(PDFDocumentInfo(fileURL: url, pageCount: doc.pageCount))
         }
@@ -283,7 +295,10 @@ struct DocumentWindow: View {
         if let pane = ProcessInfo.processInfo.environment["CLAUDEPDF_PANE"] {
             navigationPane = NavigationPane(rawValue: pane)
         }
-        DebugSnapshot.scheduleIfRequested(engine: engine, viewer: viewer)
+        if let tab = ProcessInfo.processInfo.environment["CLAUDEPDF_TAB"].flatMap(AssistantTab.init) {
+            assistantTab = tab
+        }
+        DebugSnapshot.scheduleIfRequested(engine: engine, viewer: viewer, pins: pins)
         #endif
     }
 }

@@ -51,6 +51,12 @@ struct MockProvider: ChatProvider {
                     preamble += "and \"this sentence is a paraphrase that is not in the document\".\n\n"
                 }
                 preamble += Self.latexSample
+                #if DEBUG
+                // A believable answer for design snapshots (see `DebugSnapshot`).
+                if let canned = ProcessInfo.processInfo.environment["CLAUDEPDF_MOCK_ANSWER"] {
+                    preamble = canned.replacingOccurrences(of: "\\n", with: "\n")
+                }
+                #endif
                 for word in preamble.split(separator: " ", omittingEmptySubsequences: false) {
                     try Task.checkCancellation()
                     continuation.yield(.textDelta(String(word) + " "))

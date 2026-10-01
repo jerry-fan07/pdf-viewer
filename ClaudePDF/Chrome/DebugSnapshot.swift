@@ -15,11 +15,15 @@ enum DebugSnapshot {
     /// Views that float over the pages, in window coordinates (top-left origin).
     static var overlayFrames: [String: CGRect] = [:]
 
-    static func scheduleIfRequested(engine: ChatEngine, viewer: PDFViewerController) {
+    static func scheduleIfRequested(engine: ChatEngine, viewer: PDFViewerController, pins: PinnedNotes) {
         let env = ProcessInfo.processInfo.environment
         guard let path = env["CLAUDEPDF_SNAPSHOT"] else { return }
         Task { @MainActor in
             try? await Task.sleep(for: .seconds(2.5))
+            if let page = env["CLAUDEPDF_PAGE"].flatMap(Int.init) {
+                viewer.scroll(toPage: page)
+                try? await Task.sleep(for: .seconds(0.5))
+            }
             if let search = env["CLAUDEPDF_FIND"] {
                 viewer.searchQuery = search
                 try? await Task.sleep(for: .seconds(1))
@@ -35,6 +39,10 @@ enum DebugSnapshot {
                 for _ in 0..<200 where engine.isStreaming {
                     try? await Task.sleep(for: .milliseconds(100))
                 }
+                try? await Task.sleep(for: .seconds(0.5))
+            }
+            if env["CLAUDEPDF_PIN"] != nil, let card = engine.threadCards.last, let note = pins.save(card: card) {
+                pins.focusedID = note.id
                 try? await Task.sleep(for: .seconds(0.5))
             }
             if let staged = env["CLAUDEPDF_STAGE"] {
